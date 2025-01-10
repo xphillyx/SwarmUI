@@ -97,6 +97,8 @@ public class WebServer
         RegisterTheme(new("cyber_swarm", "Cyber Swarm", ["/css/themes/cyber_swarm.css"], true));
         RegisterTheme(new("punked", "Punked", ["/css/themes/punked.css"], true));
         RegisterTheme(new("eyesear_white", "Eyesear White", ["/css/themes/eyesear_white.css"], false));
+        RegisterTheme(new("swarmpunk", "Swarm Punk", ["/css/themes/modern.css", "/css/themes/swarmpunk.css"], true));
+        RegisterTheme(new("beweish", "Beweish", ["/css/themes/modern.css", "/css/themes/beweish.css"], true));
     }
 
     /// <summary>Main prep, called by <see cref="Program"/>, generally should not be touched externally.</summary>
@@ -289,7 +291,12 @@ public class WebServer
                     string simpleName = file.AfterLast('/').BeforeLast('.');
                     string id = T2IParamTypes.CleanTypeName(simpleName);
                     string content = File.ReadAllText(file);
-                    tabHeader.Append($"<li class=\"nav-item\" role=\"presentation\"><a class=\"nav-link translate\" id=\"maintab_{id}\" data-bs-toggle=\"tab\" href=\"#{id}\" aria-selected=\"false\" tabindex=\"-1\" role=\"tab\">{simpleName}</a></li>\n");
+                    string perm = $"view_extension_tab_{id}";
+                    if (!Permissions.Registered.ContainsKey(perm))
+                    {
+                        Permissions.Register(new(perm, $"View Extension Tab {simpleName}", $"Allows access to the {simpleName} extension tab on the main page.", PermissionDefault.USER, Permissions.GroupExtensionTabs));
+                    }
+                    tabHeader.Append($"<li class=\"nav-item\" role=\"presentation\" data-requiredpermission=\"{perm}\"><a class=\"nav-link translate\" id=\"maintab_{id}\" data-bs-toggle=\"tab\" href=\"#{id}\" aria-selected=\"false\" tabindex=\"-1\" role=\"tab\">{simpleName}</a></li>\n");
                     tabFooter.Append($"<div class=\"tab-pane tab-pane-vw\" id=\"{id}\" role=\"tabpanel\">\n{content}\n</div>\n");
                 }
             }
@@ -329,17 +336,6 @@ public class WebServer
     }
 
     /// <summary>Test the validity of a user-given file path. Returns (path, consoleError, userError).</summary>
-    public (string, string, string) CheckOutputFilePath(string path, string userId, bool isExact)
-    {
-        string root = Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, Program.ServerSettings.Paths.OutputPath);
-        if (Program.ServerSettings.Paths.AppendUserNameToOutputPath && !isExact)
-        {
-            root = $"{root}/{userId}";
-        }
-        return CheckFilePath(root, path);
-    }
-
-    /// <summary>Test the validity of a user-given file path. Returns (path, consoleError, userError).</summary>
     public static (string, string, string) CheckFilePath(string root, string path)
     {
         path = path.Replace('\\', '/').Replace("%20", " ");
@@ -350,7 +346,7 @@ public class WebServer
         }
         root = root.Replace('\\', '/');
         path = $"{root}/{path.Trim()}";
-        if (path.Contains("//"))
+        while (path.Contains("//"))
         {
             path = path.Replace("//", "/");
         }
@@ -389,6 +385,26 @@ public class WebServer
         await context.Response.CompleteAsync();
     }
 
+    public static string GetUserIdFor(HttpContext context)
+    {
+        if (Program.ServerSettings.Authorization.AuthorizationRequired)
+        {
+            // TODO
+            return null;
+        }
+        if (context.Request.Headers.TryGetValue("X-SWARM-USER_ID", out StringValues user_id))
+        {
+            return user_id[0];
+        }
+        return SessionHandler.LocalUserID; // TODO: disable this if non-local swarm instance
+    }
+
+    public static User GetUserFor(HttpContext context)
+    {
+        string id = GetUserIdFor(context);
+        return id is null ? null : Program.Sessions.GetUser(id);
+    }
+
     /// <summary>Web route for viewing output images.</summary>
     public async Task ViewOutput(HttpContext context)
     {
@@ -399,13 +415,42 @@ public class WebServer
             path = path.After("/View/");
             isExact = true;
         }
-        else
+        else if (path.StartsWith("/Output/"))
         {
             path = path.After("/Output/");
         }
+        else
+        {
+            await context.YieldJsonOutput(null, 400, Utilities.ErrorObj("view output path prefix does not make sense", "bad_path"));
+            return;
+        }
         path = Uri.UnescapeDataString(path).Replace('\\', '/');
-        string userId = BasicAPIFeatures.GetUserIdFor(context);
-        (path, string consoleError, string userError) = CheckOutputFilePath(path, userId, isExact);
+        User user = GetUserFor(context);
+        if (user is null)
+        {
+            await context.YieldJsonOutput(null, 400, Utilities.ErrorObj("invalid or unauthorized", "invalid_user"));
+            return;
+        }
+        string root = Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, Program.ServerSettings.Paths.OutputPath);
+        if (Program.ServerSettings.Paths.AppendUserNameToOutputPath)
+        {
+            if (isExact)
+            {
+                (string forUser, string newPath) = path.BeforeAndAfter('/');
+                if (forUser != user.UserID && !user.HasPermission(Permissions.ViewOthersOutputs))
+                {
+                    await context.YieldJsonOutput(null, 400, Utilities.ErrorObj("unauthorized - you may not view other users' outputs", "unauthorized"));
+                    return;
+                }
+                root = $"{root}/{forUser}";
+                path = newPath;
+            }
+            else
+            {
+                root = $"{root}/{user.UserID}";
+            }
+        }
+        (path, string consoleError, string userError) = CheckFilePath(root, path);
         if (consoleError is not null)
         {
             Logs.Error(consoleError);
@@ -413,11 +458,16 @@ public class WebServer
             return;
         }
         byte[] data = null;
+        string contentType = Utilities.GuessContentType(path);
         try
         {
-            if (context.Request.Query.TryGetValue("preview", out StringValues previewToken) && $"{previewToken}" == "true" && Program.Sessions.GetUser(userId).Settings.ImageHistoryUsePreviews)
+            if (context.Request.Query.TryGetValue("preview", out StringValues previewToken) && $"{previewToken}" == "true" && user.Settings.ImageHistoryUsePreviews)
             {
                 data = ImageMetadataTracker.GetOrCreatePreviewFor(path);
+                if (data is not null)
+                {
+                    contentType = "image/jpg";
+                }
             }
             data ??= await File.ReadAllBytesAsync(path);
         }
@@ -435,7 +485,7 @@ public class WebServer
             }
             return;
         }
-        context.Response.ContentType = Utilities.GuessContentType(path);
+        context.Response.ContentType = contentType;
         context.Response.StatusCode = 200;
         context.Response.ContentLength = data.Length;
         await context.Response.Body.WriteAsync(data, Program.GlobalProgramCancel);

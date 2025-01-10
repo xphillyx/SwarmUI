@@ -46,7 +46,7 @@
     <li class="nav-item" role="presentation">
         <a class="nav-link translate" data-bs-toggle="tab" href="#user_tab" id="usersettingstabbutton" aria-selected="false" tabindex="-1" role="tab">User</a>
     </li>
-    <li class="nav-item" role="presentation">
+    <li class="nav-item" role="presentation" data-requiredpermission="view_server_tab">
         <a class="nav-link translate" data-bs-toggle="tab" href="#server_tab" id="servertabbutton" aria-selected="false" tabindex="-1" role="tab">Server</a>
     </li>
 </ul>
@@ -93,7 +93,10 @@
                 <div class="input-sidebar" id="input_sidebar">
                     <span class="interrupt_line"></span>
                     <div class="main_inputs_area_wrapper" id="main_inputs_area_wrapper">
-                        <input type="text translate" class="main_inputs_filter auto-text" id="main_inputs_filter" oninput="hideUnsupportableParams()" placeholder="Filter parameters..." />
+                        <div class="input_filter_container">
+                            <input type="text translate" class="main_inputs_filter auto-text" id="main_inputs_filter" oninput="hideUnsupportableParams()" placeholder="Filter parameters..." />
+                            <span class="clear_input_icon" id="clear_input_icon" onclick="clearParamFilterInput()">&#x2715;</span>
+                        </div>
                         <div id="main_inputs_area"></div>
                         <div id="main_inputs_area_advanced" class="main_inputs_area_advanced"></div>
                         <div id="main_inputs_area_hidden" class="main_inputs_area_hidden"></div>
@@ -106,7 +109,7 @@
                 </div>
                 <div class="t2i-top-split-bar splitter-bar" id="t2i-top-split-bar"><div class="t2i-split-quickbutton t2i-top-split-quickbutton" id="t2i-top-split-quickbutton">&#x21DA;</div></div>
                 <div class="main-image-area" id="main_image_area">
-                    <div class="image_editor_input" id="image_editor_input" style="display:none;"></div><div class="image_editor_sizebar splitter-bar t2i-top-imageeditor-bar" id="image_editor_sizebar" style="display:none;"></div><div class="current_image" id="current_image"><div id="welcome_message" class="welcome_message">@(new HtmlString(Program.VersionUpdateMessage ?? Program.ServerSettings.UI.OverrideWelcomeMessage))</div></div><div class="t2i-top-split-bar splitter-bar" id="t2i-top-2nd-split-bar"></div>
+                    <div class="image_editor_input" id="image_editor_input" style="display:none;"></div><div class="image_editor_sizebar splitter-bar t2i-top-imageeditor-bar" id="image_editor_sizebar" style="display:none;"></div><div class="current_image drag_image_target" id="current_image"><div id="welcome_message" class="welcome_message">@(new HtmlString(Program.VersionUpdateMessage ?? (Program.ServerSettings.ShowExperimentalFeatures ? "Experimental Features are enabled. Issue reports will not be accepted." : Program.ServerSettings.UI.OverrideWelcomeMessage)))</div></div><div class="t2i-top-split-bar splitter-bar" id="t2i-top-2nd-split-bar"></div>
                     <div class="current_image_batch" id="current_image_batch_wrapper">
                         <div style="position: relative; width: 0; height: 0;">
                             <div class="batch-gear-button" onclick="doPopover('batchgear')">&#9881;</div>
@@ -117,35 +120,43 @@
                             </div>
                             <div class="batchgear-toggler translate" title="If enabled, automatically clears out the image batch when generating a new one. If disabled, leaves history to grow until you refresh the page.">
                                 <span class="form-check form-switch display-inline-block">
-                                    <input type="checkbox" class="form-check-input" id="auto_clear_batch_checkbox" onchange="toggleAutoClearBatch()"> <label class="form-check-label" for="auto_clear_batch_checkbox translate">Auto Clear Batch</label>
+                                    <input type="checkbox" class="form-check-input" id="auto_clear_batch_checkbox" onchange="toggleAutoClearBatch()"> <label class="form-check-label" for="auto_clear_batch_checkbox">Auto Clear Batch</label>
                                 </span>
                             </div>
                             <div class="batchgear-toggler translate" title="If enabled, automatically swaps to previews of new images the moment they're available, before the image itself is done generating.">
                                 <span class="form-check form-switch display-inline-block">
-                                    <input type="checkbox" class="form-check-input" id="auto_load_previews_checkbox" onchange="toggleAutoLoadPreviews()" checked=""> <label class="form-check-label translate" for="auto_load_previews_checkbox translate">Auto Swap To Previews</label>
+                                    <input type="checkbox" class="form-check-input" id="auto_load_previews_checkbox" onchange="toggleAutoLoadPreviews()" checked=""> <label class="form-check-label translate" for="auto_load_previews_checkbox">Auto Swap To Previews</label>
                                 </span>
                             </div>
                             <div class="batchgear-toggler translate" title="If enabled, automatically swaps to new images the moment they're done generating.">
                                 <span class="form-check form-switch display-inline-block">
-                                    <input type="checkbox" class="form-check-input" id="auto_load_images_checkbox" onchange="toggleAutoLoadImages()" checked="true"> <label class="form-check-label translate" for="auto_load_previews_checkbox translate">Auto Swap To Images</label>
+                                    <input type="checkbox" class="form-check-input" id="auto_load_images_checkbox" onchange="toggleAutoLoadImages()" checked="true"> <label class="form-check-label translate" for="auto_load_previews_checkbox">Auto Swap To Images</label>
+                                </span>
+                            </div>
+                            <div class="batchgear-toggler translate" title="If enabled, display loading spinners and failed generation crosses.">
+                                <span class="form-check form-switch display-inline-block">
+                                    <input type="checkbox" class="form-check-input" id="show_load_spinners_checkbox" onchange="toggleShowLoadSpinners()" checked="true"> <label class="form-check-label translate" for="show_load_spinners_checkbox">Show Load Spinners</label>
                                 </span>
                             </div>
                         </div>
                         <div id="current_image_batch" class="current_image_batch_core"></div>
                     </div>
-                    <div class="alt_prompt_region" id="alt_prompt_region">
+                    <div class="alt_prompt_region drag_image_target" id="alt_prompt_region">
                         <div id="alt_prompt_extra_area" class="alt_prompt_extra_area">
                             <button class="interrupt-button image-clear-button translate" style="display: none;" id="alt_prompt_image_clear_button">Clear Images</button>
                             <div class="added-image-area alt-prompt-added-image-area" id="alt_prompt_image_area"></div>
                         </div>
                         <div class="alt_prompt_main_line">
+                            <span class="alt-text-add-button-wrapper">
+                                <span class="basic-button alt-text-add-button" id="alt_text_add_button">+</span>
+                            </span>
                             <span class="alt-text-tokencount-wrapper">
                                 <span class="auto-input-prompt-tokencount alt-text-tokencount">
                                     <span id="alt_text_tokencount" title="Prompt's Text-Encoder token count / chunk-size">0/75</span><span id="alt_negtext_tokencount" style="display:none" title="Negative prompt's Text-Encoder token count / chunk-size">Neg: 0/75</span>
                                 </span>
                             </span>
                             <div class="alt_prompt_textboxes">
-                                <textarea id="alt_prompt_textbox" class="alt_prompt_textbox translate" rows="1" placeholder="Type your prompt here... (or, drag an image in to use image prompting ReVision/IP-Adapter)" onpaste="revisionImagePaste(arguments[0])"></textarea>
+                                <textarea id="alt_prompt_textbox" class="alt_prompt_textbox translate" rows="1" placeholder="Type your prompt here... (or, drag/paste an image in to use Image Prompting)" onpaste="imagePromptImagePaste(arguments[0])"></textarea>
                                 <br>
                                 <textarea id="alt_negativeprompt_textbox" class="alt_prompt_textbox translate" rows="1" placeholder="Optionally, type a negative prompt here..."></textarea>
                             </div>
@@ -154,6 +165,48 @@
                             <button class="alt-prompt-buttons interrupt-button interrupt-button-none alt-interrupt" id="alt_interrupt_button" oncontextmenu="doPopover('interrupt'); return false;" onclick="mainGenHandler.doInterrupt()">&times;</button>
                         </div>
                     </div>
+                    @WebUtil.ModalHeader("text_prompt_segment_modal", "Add Prompt Syntax: Auto-Segment And Refine")
+                        <div class="modal-body">
+                            <span class="translate">
+                                This Prompt-Syntax feature lets you add a region to the image that will be automatically detected after generation, and then automatically inpainted with a given prompt.
+                                <br>A common example use case here is when generating an image of a person, use this feature to automatically refine the face (this is sometimes called 'ADetailer').
+                                <br>By default this uses CLIPSeg, which automatically masks the region based on a text prompt. You can instead use a YOLOv8 model.
+                                <br>Learn more about this feature here:
+                            </span>
+                            <a href="https://github.com/mcmonkeyprojects/SwarmUI/blob/master/docs/Features/Prompt%20Syntax.md#automatic-segmentation-and-refining" target="_blank" rel="noreferrer noopener" class="translate">[Swarm Docs: Prompt Syntax - Automatic Segmentation and Refining]</a>
+                            <span class="translate">
+                                <br>Note that there are also advanced options in the parameters menu, under Display Advanced -&gt; Regional Prompting.
+                            </span>
+                            <hr>
+                            <div id="text_prompt_segment_other_inputs"></div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-primary basic-button translate" onclick="$('#text_prompt_segment_modal').modal('hide')">Cancel</button>
+                            <button type="button" class="btn btn-secondary basic-button translate" onclick="promptPlusButton.segmentModalSubmit()">Add</button>
+                        </div>
+                    @WebUtil.ModalFooter()
+                    @WebUtil.ModalHeader("text_prompt_region_modal", "Add Prompt Syntax: Regional Prompt")
+                        <div class="modal-body">
+                            <span class="translate">
+                                This Prompt-Syntax feature lets you define simple regions of an image that will receive a different prompt from the rest of the image while generation.
+                                <br>Optionally, you can also auto-inpaint the region after to refine it further.
+                                <br>Note that you may add a syntax feature of <code>&lt;region:background&gt;</code> to your prompt to also set a prompt for the background only to use.
+                                <br>Learn more about this feature here:
+                            </span>
+                            <a href="https://github.com/mcmonkeyprojects/SwarmUI/blob/master/docs/Features/Prompt%20Syntax.md#regional-prompting" target="_blank" rel="noreferrer noopener" class="translate">[Swarm Docs: Prompt Syntax - Regional Prompting]</a>
+                            <span class="translate">
+                                <br>Note that there are also advanced options in the parameters menu, under Display Advanced -&gt; Regional Prompting.
+                            </span>
+                            <hr>
+                            <div id="text_prompt_region_canvasholder">
+                            </div>
+                            <div id="text_prompt_region_other_inputs"></div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-primary basic-button translate" onclick="$('#text_prompt_region_modal').modal('hide')">Cancel</button>
+                            <button type="button" class="btn btn-secondary basic-button translate" onclick="promptPlusButton.regionModalSubmit()">Add</button>
+                        </div>
+                    @WebUtil.ModalFooter()
                     <div class="sui-popover sui_popover_model" id="popover_generate_center">
                         <div class="sui_popover_model_button translate" onclick="mainGenHandler.doGenerate()">Generate</div>
                         <div class="sui_popover_model_button translate" id="generate_forever_button" onclick="toggleGenerateForever()">Generate Forever</div>
@@ -233,6 +286,18 @@
                         <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#gguf_installer').modal('hide')">Cancel</button>
                     </div>
                 @WebUtil.ModalFooter()
+                @WebUtil.ModalHeader("extramodels_installer", "Install City96-ExtraModels Support")
+                    <div class="modal-body">
+                        The model you're trying to use appears to be a model class that requires the Comfy extension City96-ExtraModels to work.
+                        <br>
+                        <br>Would you like to install it?
+                    </div>
+                    <div class="modal-footer" id="install_extramodels_button">
+                        <button type="button" class="btn btn-primary basic-button translate" onclick="installFeatureById('extramodels', 'install_extramodels_button', 'extramodels_installer')">Install</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#extramodels_installer').modal('hide');localStorage.setItem('hide_extramodels_check', 'true')">No and don't show again</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#extramodels_installer').modal('hide')">Cancel</button>
+                    </div>
+                @WebUtil.ModalFooter()
             </div>
         </div>
         <div class="t2i-mid-split-bar splitter-bar" id="t2i-mid-split-bar"><div class="t2i-split-quickbutton t2i-mid-split-quickbutton" id="t2i-mid-split-quickbutton">&#x290B;</div></div>
@@ -278,7 +343,7 @@
                     <div class="browser_container" id="image_history"></div>
                 </div>
                 <div class="modal modal-fullscreen imageview_popup_modal_background" id="image_fullview_modal">
-                    <div id="image_fullview_modal_content" style="width:fit-content;margin:auto;"></div>
+                    <div id="image_fullview_modal_content" style="width:fit-content;margin:auto;min-width:70vw;"></div>
                     <div style="position: fixed; top: 1rem; right: 10%; width: 0; height: 0">
                         <span class="text_button translate" onclick="imageFullView.close()">[Close]</span>
                     </div>
@@ -410,7 +475,7 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-primary basic-button translate" onclick="save_edit_model()">Save</button>
-                    <button type="button" class="btn btn-secondary basic-button translate" onclick="close_edit_model()">Cancel</button>
+                    <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#edit_model_modal').modal('hide')">Cancel</button>
                 </div>
             @WebUtil.ModalFooter()
             @WebUtil.ModalHeader("edit_wildcard_modal", """Edit Wildcard: <input type="text" class="modal_text_extra" id="edit_wildcard_name" placeholder="Wildcard Name" />""")
@@ -425,7 +490,7 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-primary basic-button translate" onclick="save_edit_wildcard()">Save</button>
-                    <button type="button" class="btn btn-secondary basic-button translate" onclick="close_edit_wildcard()">Cancel</button>
+                    <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#edit_wildcard_modal').modal('hide')">Cancel</button>
                 </div>
             @WebUtil.ModalFooter()
             @WebUtil.ModalHeader("test_wildcard_modal", """Test Wildcard: <span id="test_wildcard_name"></span>""")
@@ -434,7 +499,31 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" id="test_wildcard_again_button" class="btn btn-primary basic-button translate" onclick="test_wildcard_again()">Test Again</button>
-                    <button type="button" class="btn btn-secondary basic-button translate" onclick="close_test_wildcard()">Cancel</button>
+                    <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#test_wildcard_modal').modal('hide')">Cancel</button>
+                </div>
+            @WebUtil.ModalFooter()
+            @WebUtil.ModalHeader("delete_model_modal", """Delete Model: <span id="delete_model_name"></span>""")
+                <div class="modal-body">
+                    <span class="translate">Are you sure you want to delete this model?</span>
+                    <br><i class="translate">This cannot be undone. The whole model will be gone until you re-download it.</i>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary basic-button translate" onclick="doDeleteModelNow()">Delete Now</button>
+                    <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#delete_model_modal').modal('hide')">Cancel</button>
+                </div>
+            @WebUtil.ModalFooter()
+            @WebUtil.ModalHeader("rename_model_modal", """Rename Model: <span id="rename_model_name"></span>""")
+                <div class="modal-body">
+                    <span class="translate">Rename the model:</span>
+                    <br><i class="translate">This will move the model file and any attached files to a different sub-folder, within the same models path.</i>
+                    <br>@WebUtil.TextPopoverButton("modelrenamedownloaderfolder", "What folder to put the model in.\nTo create new folders, simply type paths with '/' in them into the 'Save as:' name box below.") <b>Folder</b>: <select class="auto-dropdown" id="model_rename_downloader_folder" autocomplete="off"></select>
+                    <br>
+                    <br>@WebUtil.TextPopoverButton("modelrenamedownloadersaveas", "File name to save as. Don't include the '.safetensors' file extension, just the name.\nYou can use a folder path with the '/' symbol.") <b>New name</b>: <input type="text" id="model_rename_downloader_name" class="auto-text auto-text-wide" placeholder="Model Name" autocomplete="off" oninput="modelRenameNameInput()" />
+                    <br>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-primary basic-button translate" onclick="doRenameModelNow()">Rename Now</button>
+                    <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#rename_model_modal').modal('hide')">Cancel</button>
                 </div>
             @WebUtil.ModalFooter()
             @WebUtil.ModalHeader("create_tensorrt_modal", """Create TensorRT Engine""")
@@ -470,7 +559,7 @@
                     </div>
                     <div class="modal-footer">
                         <button type="button" id="trt_create_button" class="btn btn-primary basic-button translate" onclick="trt_modal_create()">Create</button>
-                        <button type="button" class="btn btn-secondary basic-button translate" onclick="close_trt_modal()">Cancel</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#create_tensorrt_modal').modal('hide')">Cancel</button>
                     </div>
                 </div>
             @WebUtil.ModalFooter()
@@ -482,16 +571,16 @@
             <li class="nav-item" role="presentation">
                 <a class="nav-link active translate" data-bs-toggle="tab" href="#Utilities-Info-Tab" aria-selected="true" role="tab">Info</a>
             </li>
-            <li class="nav-item" role="presentation">
+            <li class="nav-item" role="presentation" data-requiredpermission="use_tokenizer">
                 <a class="nav-link translate" data-bs-toggle="tab" id="cliptokentabbutton" href="#Utilities-CLIP-Token-Tab" aria-selected="false" tabindex="-1" role="tab">CLIP Tokenization</a>
             </li>
-            <li class="nav-item" role="presentation">
+            <li class="nav-item" role="presentation" data-requiredpermission="pickle2safetensors">
                 <a class="nav-link translate" data-bs-toggle="tab" href="#Utilities-Pickle2Safetensor-Tab" aria-selected="false" tabindex="-1" role="tab">Pickle To Safetensors</a>
             </li>
-            <li class="nav-item" role="presentation">
+            <li class="nav-item" role="presentation" data-requiredpermission="extra_loras">
                 <a class="nav-link translate" data-bs-toggle="tab" href="#Utilities-LoraExtractor-Tab" id="loraextractortabbutton" aria-selected="false" tabindex="-1" role="tab">LoRA Extractor</a>
             </li>
-            <li class="nav-item" role="presentation">
+            <li class="nav-item" role="presentation" data-requiredpermission="download_models">
                 <a class="nav-link translate" data-bs-toggle="tab" href="#Utilities-ModelDownloader-Tab" id="modeldownloadertabbutton" aria-selected="false" tabindex="-1" role="tab">Model Downloader</a>
             </li>
         </ul>
@@ -506,7 +595,7 @@
                     </div>
                 </div>
                 <br>
-                <div class="card border-secondary mb-3 card-center-container">
+                <div class="card border-secondary mb-3 card-center-container" data-requiredpermission="reset_metadata">
                     <div class="card-header translate">Metadata Utilities</div>
                     <div class="card-body">
                         <p class="card-text">
@@ -518,47 +607,49 @@
                             <br>Note that this does not remove metadata from the models or images themselves, just from the databases that keep an efficient tracker of them.
                             <br>This may take a moment to run.
                             <hr>
-                            <div class="card-center-container">
-                                <button id="util_modelmetadatascanner_button" class="basic-button translate" onclick="modelMetadataScanner.run()">Scan Civitai For Metadata</button>
-                            </div>
-                            <br>Model Sub-type: <select id="util_modelmetadatascanner_subtype" class="auto-dropdown">
-                                <option value="all" class="translate" selected>all</option>
-                                @foreach (string key in Program.T2IModelSets.Keys)
-                                {
-                                    <option value="@key" class="translate">@key</option>
-                                }
-                            </select>
-                            &emsp;Date range: <select id="util_modelmetadatascanner_date" class="auto-dropdown">
-                                <option value="all" class="translate" selected>All (ignore time)</option>
-                                <option value="today" class="translate">Models downloaded today (24 hours)</option>
-                                <option value="week" class="translate">Models downloaded this week (7 days)</option>
-                                <option value="month" class="translate">Models downloaded this month (31 days)</option>
-                            </select>
-                            <br>Filter: <select id="util_modelmetadatascanner_requirements" class="auto-dropdown">
-                                <option value="all" class="translate" selected>All</option>
-                                <option value="no_thumbnail" class="translate">Only models without a thumbnail</option>
-                                <option value="no_description" class="translate">Only models without a description</option>
-                                <option value="no_author" class="translate">Only models without an author</option>
-                                <option value="explicit_url" class="translate">Only models with an explicit civitai url in the description</option>
-                            </select>
-                            &emsp;Replace: <select id="util_modelmetadatascanner_replace" class="auto-dropdown">
-                                <option value="only_missing" class="translate" selected>Only missing data</option>
-                                <option value="all" class="translate">All (Replace everything)</option>
-                                <option value="only_thumbnail" class="translate">Only the thumbnail image</option>
-                                <option value="only_text" class="translate">Only the basic text inputs (eg description)</option>
-                            </select>
-                            <br>
-                            Model filename filter: <input type="text" id="util_modelmetadatascanner_filter" class="auto-text" placeholder="Filter by filename" />
-                            <br><span id="util_modelmetadatascanner_result"></span>
-                            <br>
-                            <br>If you click this button, Swarm will scan Civitai for metadata on models, and update the metadata database with any information found.
-                            <br>You can filter by date range (eg only recently downloaded model files), and/or by required missing content (eg only scan those without images).
-                            <br>You can also choose what metadata gets updated (eg only the image).
-                            <br>Optionally use the model filename filter to only scan models with a specific filename. Use '*' as a wildcard.
-                            <br>(For example, 'SDXL/*' will scan only models within a folder named 'SDXL/'. This is case-insensitive.)
-                            <br>Will take a while, and may seem to freeze up if it has to apply edits. This is normal.
-                            <br>Additional debug info while running can be found in the browser console.
-                            <br><b>Be careful!</b> If you have manually edited metadata, you can easily accidentally delete it. There is no undo for unwanted changes, they are applied rapidly in bulk.
+                            <span data-requiredpermission="edit_model_metadata">
+                                <div class="card-center-container">
+                                    <button id="util_modelmetadatascanner_button" class="basic-button translate" onclick="modelMetadataScanner.run()">Scan Civitai For Metadata</button>
+                                </div>
+                                <br>Model Sub-type: <select id="util_modelmetadatascanner_subtype" class="auto-dropdown">
+                                    <option value="all" class="translate" selected>all</option>
+                                    @foreach (string key in Program.T2IModelSets.Keys)
+                                    {
+                                        <option value="@key" class="translate">@key</option>
+                                    }
+                                </select>
+                                &emsp;Date range: <select id="util_modelmetadatascanner_date" class="auto-dropdown">
+                                    <option value="all" class="translate" selected>All (ignore time)</option>
+                                    <option value="today" class="translate">Models downloaded today (24 hours)</option>
+                                    <option value="week" class="translate">Models downloaded this week (7 days)</option>
+                                    <option value="month" class="translate">Models downloaded this month (31 days)</option>
+                                </select>
+                                <br>Filter: <select id="util_modelmetadatascanner_requirements" class="auto-dropdown">
+                                    <option value="all" class="translate" selected>All</option>
+                                    <option value="no_thumbnail" class="translate">Only models without a thumbnail</option>
+                                    <option value="no_description" class="translate">Only models without a description</option>
+                                    <option value="no_author" class="translate">Only models without an author</option>
+                                    <option value="explicit_url" class="translate">Only models with an explicit civitai url in the description</option>
+                                </select>
+                                &emsp;Replace: <select id="util_modelmetadatascanner_replace" class="auto-dropdown">
+                                    <option value="only_missing" class="translate" selected>Only missing data</option>
+                                    <option value="all" class="translate">All (Replace everything)</option>
+                                    <option value="only_thumbnail" class="translate">Only the thumbnail image</option>
+                                    <option value="only_text" class="translate">Only the basic text inputs (eg description)</option>
+                                </select>
+                                <br>
+                                Model filename filter: <input type="text" id="util_modelmetadatascanner_filter" class="auto-text" placeholder="Filter by filename" />
+                                <br><span id="util_modelmetadatascanner_result"></span>
+                                <br>
+                                <br>If you click this button, Swarm will scan Civitai for metadata on models, and update the metadata database with any information found.
+                                <br>You can filter by date range (eg only recently downloaded model files), and/or by required missing content (eg only scan those without images).
+                                <br>You can also choose what metadata gets updated (eg only the image).
+                                <br>Optionally use the model filename filter to only scan models with a specific filename. Use '*' as a wildcard.
+                                <br>(For example, 'SDXL/*' will scan only models within a folder named 'SDXL/'. This is case-insensitive.)
+                                <br>Will take a while, and may seem to freeze up if it has to apply edits. This is normal.
+                                <br>Additional debug info while running can be found in the browser console.
+                                <br><b>Be careful!</b> If you have manually edited metadata, you can easily accidentally delete it. There is no undo for unwanted changes, they are applied rapidly in bulk.
+                            </span>
                         </p>
                     </div>
                 </div>
@@ -586,7 +677,7 @@
                     <div class="card-header translate">Pickle To Safetensors</div>
                     <div class="card-body">
                         <p class="card-text translate">
-                            This is a tool to quickle convert legacy Pickle (.pt, .ckpt, .bin) files to modern Safetensors files.
+                            This is a tool to quickly convert legacy Pickle (.pt, .ckpt, .bin) files to modern Safetensors files.
                             <br><b>WARNING:</b> Pickle files may contain malicious code. Do not use this tool or otherwise load pickle files unless you trust their source.
                             <br>The pickle files will be moved to a "backups" folder, and the safetensors files left in place where the pickles originally were.
                             <br>You may delete the backups folder after confirming the new safetensors files work as intended.
@@ -696,10 +787,10 @@
             <li class="nav-item" role="presentation">
                 <a class="nav-link active translate" data-bs-toggle="tab" href="#user-info" id="userinfotabbutton" aria-selected="true" role="tab">User Info</a>
             </li>
-            <li class="nav-item" role="presentation">
+            <li class="nav-item" role="presentation" data-requiredpermission="read_user_settings">
                 <a class="nav-link translate" data-bs-toggle="tab" href="#Settings-User" id="userconfigtabbutton" aria-selected="false" tabindex="-1" role="tab">User Settings</a>
             </li>
-            <li class="nav-item" role="presentation">
+            <li class="nav-item" role="presentation" data-requiredpermission="edit_params">
                 <a class="nav-link translate" data-bs-toggle="tab" href="#Param-Config-User" id="userparamconfigtabbutton" aria-selected="false" tabindex="-1" role="tab">Parameter Configuration</a>
             </li>
         </ul>
@@ -788,16 +879,19 @@
             <li class="nav-item" role="presentation">
                 <a class="nav-link active translate" data-bs-toggle="tab" href="#Server-Info" id="serverinfotabbutton" aria-selected="true" role="tab">Server Info</a>
             </li>
-            <li class="nav-item" role="presentation">
+            <li class="nav-item" role="presentation" data-requiredpermission="view_backends_list">
                 <a class="nav-link translate" data-bs-toggle="tab" href="#Settings-Backends" id="serverbackendstabbutton" aria-selected="false" role="tab">Backends</a>
             </li>
-            <li class="nav-item" role="presentation">
+            <li class="nav-item" role="presentation" data-requiredpermission="read_server_settings">
                 <a class="nav-link translate" data-bs-toggle="tab" href="#Settings-Server" id="serverconfigtabbutton" aria-selected="false" tabindex="-1" role="tab">Server Configuration</a>
             </li>
-            <li class="nav-item" role="presentation">
+            <li class="nav-item @experimentalHide" role="presentation" data-requiredpermission="manage_users">
+                <a class="nav-link translate" data-bs-toggle="tab" href="#Server-ManageUsers" id="manageusersbutton" aria-selected="false" tabindex="-1" role="tab">Users</a>
+            </li>
+            <li class="nav-item" role="presentation" data-requiredpermission="manage_extensions">
                 <a class="nav-link translate" data-bs-toggle="tab" href="#Server-Extensions" id="extensionstabbutton" aria-selected="false" tabindex="-1" role="tab">Extensions</a>
             </li>
-            <li class="nav-item" role="presentation">
+            <li class="nav-item" role="presentation" data-requiredpermission="view_logs">
                 <a class="nav-link translate" data-bs-toggle="tab" href="#Server-Logs" id="logtabbutton" aria-selected="false" tabindex="-1" role="tab">Logs</a>
             </li>
         </ul>
@@ -808,17 +902,17 @@
                     <div class="card-body">
                         <p class="card-text">
                             The "Server" tab provides access to SwarmUI's server internals, including:
-                            <br>&bullet; The <a href="#Settings-Backends" onclick="getRequiredElementById('serverbackendstabbutton').click()">Backends</a> tab, which allows you to configure and manage backends (the underlying engines that provide the generation core, or remote instances of swarm this instance is connected to)
-                            <br>&bullet; The <a href="#Settings-Server" onclick="getRequiredElementById('serverconfigtabbutton').click()">Server Configuration</a> tab, which allows you to configure and manage Swarm's settings (such as models directory, server host port, etc)
-                            <br>&bullet; The <a href="#Server-Extensions" onclick="getRequiredElementById('extensionstabbutton').click()">Extensions</a> tab, which provides ways to manage your Swarm extensions or install new ones
-                            <br>&bullet; The <a href="#Server-Logs" onclick="getRequiredElementById('logtabbutton').click()">Logs</a> tab, which allows you to view the server logs (eg if you get an error, check Logs -&gt; Debug)
+                            <span data-requiredpermission="view_backends_list"><br>&bullet; The <a href="#Settings-Backends" onclick="getRequiredElementById('serverbackendstabbutton').click()">Backends</a> tab, which allows you to configure and manage backends (the underlying engines that provide the generation core, or remote instances of swarm this instance is connected to)</span>
+                            <span data-requiredpermission="read_server_settings"><br>&bullet; The <a href="#Settings-Server" onclick="getRequiredElementById('serverconfigtabbutton').click()">Server Configuration</a> tab, which allows you to configure and manage Swarm's settings (such as models directory, server host port, etc)</span>
+                            <span data-requiredpermission="manage_extensions"><br>&bullet; The <a href="#Server-Extensions" onclick="getRequiredElementById('extensionstabbutton').click()">Extensions</a> tab, which provides ways to manage your Swarm extensions or install new ones</span>
+                            <span data-requiredpermission="view_logs"><br>&bullet; The <a href="#Server-Logs" onclick="getRequiredElementById('logtabbutton').click()">Logs</a> tab, which allows you to view the server logs (eg if you get an error, check Logs -&gt; Debug)</span>
                             <br>
                             <br>This is not to be confused with the <a href="#user_tab" onclick="getRequiredElementById('usersettingstabbutton').click();getRequiredElementById('userconfigtabbutton').click()">User Settings</a> tab, which allows you to configure your user settings (eg save path/format, default VAE choice, etc)
                         </p>
                     </div>
                 </div>
                 <div class="card-collection-inline">
-                    <div class="card border-secondary mb-3 card-center-container">
+                    <div class="card border-secondary mb-3 card-center-container" data-requiredpermission="read_server_info_panels">
                         <div class="card-header translate">Local Network</div>
                         <div class="card-body">
                             <p class="card-text">
@@ -848,7 +942,7 @@
                             </p>
                         </div>
                     </div>
-                    <div class="card border-secondary mb-3 card-center-container">
+                    <div class="card border-secondary mb-3 card-center-container" data-requiredpermission="read_server_info_panels">
                         <div class="card-header translate">Resource Usage</div>
                         <div class="card-body">
                             <p class="card-text" id="resource_usage_area">
@@ -856,7 +950,7 @@
                             </p>
                         </div>
                     </div>
-                    <div class="card border-secondary mb-3 card-center-container">
+                    <div class="card border-secondary mb-3 card-center-container" data-requiredpermission="read_server_info_panels">
                         <div class="card-header translate">Connected Users</div>
                         <div class="card-body">
                             <p class="card-text" id="connected_users_list">
@@ -890,20 +984,24 @@
                     }
                 </div>
                 <div class="card-collection-inline">
-                    <div class="card border-danger mb-3 card-center-container">
+                    <div class="card border-danger mb-3 card-center-container" data-requiredpermission="shutdown,restart">
                         <div class="card-header translate">Shutdown</div>
                         <div class="card-body">
                             <p class="card-text">
+                                <span data-requiredpermission="shutdown">
                                 <span class="translate">If you want to shut down the server, click the button below.</span>
                                 <br><button class="basic-button danger-button translate" onclick="shutdown_server()">Shutdown Server</button>
+                                </span>
                                 <br>
+                                <span data-requiredpermission="restart">
                                 <br><span class="translate">Or you can update and restart if there are updates available:</span>
                                 <br><button class="basic-button danger-button translate" onclick="update_and_restart_server()">Update and Restart Server</button>
+                                </span>
                                 <span id="shutdown_notice_area"></span>
                             </p>
                         </div>
                     </div>
-                    <div class="card border-secondary mb-3 card-center-container">
+                    <div class="card border-secondary mb-3 card-center-container" data-requiredpermission="control_mem_clean">
                         <div class="card-header translate">Free Memory</div>
                         <div class="card-body">
                             <p class="card-text">
@@ -986,6 +1084,7 @@
                             <th>Author</th>
                             <th>Description</th>
                             <th>Readme</th>
+                            <th>License</th>
                             <th>Actions</th>
                         </tr>
                         @foreach (Extension ext in Program.Extensions.Extensions.Where(e => !e.IsCore))
@@ -997,11 +1096,13 @@
                                 <td>@ext.ExtensionAuthor</td>
                                 <td>@ext.Description</td>
                                 <td>@(ext.ReadmeURL == "" ? "(Missing)": new HtmlString($"<a target=\"_blank\" href=\"{ext.ReadmeURL}\">Here</a>"))</td>
+                                <td class="@(ext.License == "MIT" ? "" : "ext-danger-license")">@ext.License</td>
                                 <td>
                                     @if (ext.CanUpdate)
                                     {
                                         <button class="basic-button" onclick="extensionsManager.updateExtension('@ext.ExtensionName', this)">Update</button>
                                     }
+                                    <button class="basic-button" onclick="extensionsManager.uninstallExtension('@ext.ExtensionName', this)">Uninstall</button>
                                 </td>
                             </tr>
                         }
@@ -1015,6 +1116,7 @@
                             <th>Author</th>
                             <th>Description</th>
                             <th>Readme</th>
+                            <th>License</th>
                             <th>Actions</th>
                         </tr>
                         @foreach (ExtensionsManager.ExtensionInfo ext in Program.Extensions.KnownExtensions.Where(e => !Program.Extensions.LoadedExtensionFolders.Contains(e.FolderName) && !e.Tags.Contains("hidden")))
@@ -1025,6 +1127,7 @@
                                 <td>@ext.Author</td>
                                 <td>@ext.Description</td>
                                 <td><a href="@ext.URL">Here</a></td>
+                                <td class="@(ext.License == "MIT" ? "" : "ext-danger-license")">@ext.License</td>
                                 <td>
                                     <button class="basic-button" onclick="extensionsManager.installExtension('@ext.Name', this)">Install</button>
                                 </td>
@@ -1032,6 +1135,54 @@
                         }
                     </table>
                 </center>
+                <div style="height: 10rem"></div> <!-- Spacer -->
+            </div>
+            <div class="tab-pane" id="Server-ManageUsers" role="tabpanel">
+                @WebUtil.ModalHeader("server_add_user_menu", "Add New User Account")
+                    <div class="modal-body">
+                        <p class="translate">This will add a new user account to your SwarmUI server.</p>
+                        <p class="translate">Please configure carefully, the account will be active immediately upon click 'Add' below.</p>
+                        <p class="translate">Click 'Cancel' if you're not ready to add a user.</p>
+                        <div id="add_user_menu_inputs"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-primary basic-button translate" onclick="userAdminManager.addUserMenuSubmit()">Add</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#server_add_user_menu').modal('hide')">Cancel</button>
+                    </div>
+                @WebUtil.ModalFooter()
+                @WebUtil.ModalHeader("server_add_role_menu", "Add New User Permission Role")
+                    <div class="modal-body">
+                        <p class="translate">This will add a new user permission role to your SwarmUI server.</p>
+                        <p class="translate">This should be used when you need to define unique contexts in which certain users get a certain subset of permissions.</p>
+                        <p class="translate">For the most part, you should just configure the base set of roles rather than adding new ones..</p>
+                        <p class="translate">Click 'Cancel' if you're not ready to add a user.</p>
+                        <div id="add_role_menu_inputs"></div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-primary basic-button translate" onclick="userAdminManager.addRoleMenuSubmit()">Add</button>
+                        <button type="button" class="btn btn-secondary basic-button translate" onclick="$('#server_add_role_menu').modal('hide')">Cancel</button>
+                    </div>
+                @WebUtil.ModalFooter()
+                <div class="manage-users-left" id="manage_users_leftbox">
+                    <div class="input_filter_container">
+                        <input type="text translate" class="main_inputs_filter auto-text" id="admin_user_filter" oninput="userAdminManager.updateFilter()" placeholder="Filter users/roles..." />
+                        <span class="clear_input_icon" id="admin_user_clear_input_icon" onclick="userAdminManager.clearFilter()">&#x2715;</span>
+                    </div>
+                    <div class="manage-users-left-header">
+                        <span class="manage-users-left-title translate">Roles</span>
+                        <button class="basic-button translate" onclick="userAdminManager.showAddRoleMenu()" title="Add a new role...">Add Role</button>
+                    </div>
+                    <div class="manage_user_leftbox_content" id="manage_users_leftbox_content_rolelist"></div>
+                    <div class="manage-users-left-header">
+                        <span class="manage-users-left-title translate">Users</span>
+                        <button class="basic-button translate" onclick="userAdminManager.showAddUserMenu()" title="Add a new user...">Add User</button>
+                    </div>
+                    <div class="manage_user_leftbox_content" id="manage_users_leftbox_content_userlist"></div>
+                </div>
+                <div class="splitter-bar" id="manage_users_splitbar"></div>
+                <div class="manage-users-right" id="manage_users_rightbox">
+                    <div id="manage_users_rightbox_content"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -1045,6 +1196,7 @@
     <script src="js/genpage/presets.js?vary=@Utilities.VaryID"></script>
     <script src="js/genpage/models.js?vary=@Utilities.VaryID"></script>
     <script src="js/genpage/params.js?vary=@Utilities.VaryID"></script>
+    <script src="js/genpage/prompttools.js?vary=@Utilities.VaryID"></script>
     <script src="js/genpage/utiltab.js?vary=@Utilities.VaryID"></script>
     <script src="js/genpage/servertab.js?vary=@Utilities.VaryID"></script>
     <script src="js/genpage/usertab.js?vary=@Utilities.VaryID"></script>

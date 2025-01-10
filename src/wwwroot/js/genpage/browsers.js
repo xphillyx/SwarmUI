@@ -413,9 +413,27 @@ class GenPageBrowserClass {
                 let textBlock = createSpan(null, 'browser-list-entry-text');
                 textBlock.innerText = desc.display || desc.name;
                 textBlock.addEventListener('click', () => {
-                    this.select(file);
+                    this.select(file, div);
                 });
                 div.appendChild(textBlock);
+            }
+            else if (this.format == 'Details List') {
+                img.style.width = '1.3rem';
+                div.className += ' browser-details-list-entry';
+                let detail_list = desc.detail_list;
+                if (!detail_list) {
+                    detail_list = [escapeHtml(desc.display || desc.name), desc.description.replaceAll('<br>', '&emsp;')];
+                }
+                let percent = 98 / detail_list.length;
+                for (let detail of detail_list) {
+                    let textBlock = createSpan(null, 'browser-details-list-entry-text');
+                    textBlock.style.width = `${percent}%`;
+                    textBlock.innerHTML = detail;
+                    textBlock.addEventListener('click', () => {
+                        this.select(file, div);
+                    });
+                    div.appendChild(textBlock);
+                }
             }
             if (desc.buttons.length > 0) {
                 let menu = createDiv(null, 'model-block-menu-button');
@@ -426,6 +444,7 @@ class GenPageBrowserClass {
                 div.appendChild(menu);
             }
             div.title = stripHtmlToText(desc.description);
+            div.dataset.name = file.name;
             img.classList.add('lazyload');
             img.dataset.src = desc.image;
             if (desc.dragimage) {
@@ -489,6 +508,18 @@ class GenPageBrowserClass {
     }
 
     /**
+     * Returns the visible element block for a given file name.
+     */
+    getVisibleEntry(name) {
+        for (let child of this.contentDiv.children) {
+            if (child.dataset.name == name) {
+                return child;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Central call to build the browser content area.
      */
     build(path, folders, files) {
@@ -531,7 +562,7 @@ class GenPageBrowserClass {
             formatSelector.id = `${this.id}-format-selector`;
             formatSelector.title = 'Display format';
             formatSelector.className = 'browser-format-selector';
-            for (let format of ['Cards', 'Small Cards', 'Big Cards', 'Thumbnails', 'Small Thumbnails', 'Big Thumbnails', 'Giant Thumbnails', 'List']) {
+            for (let format of ['Cards', 'Small Cards', 'Big Cards', 'Thumbnails', 'Small Thumbnails', 'Big Thumbnails', 'Giant Thumbnails', 'List', 'Details List']) {
                 let option = document.createElement('option');
                 option.value = format;
                 option.className = 'translate';
@@ -544,7 +575,7 @@ class GenPageBrowserClass {
             formatSelector.addEventListener('change', () => {
                 this.format = formatSelector.value;
                 localStorage.setItem(`browser_${this.id}_format`, this.format);
-                this.update();
+                this.updateWithoutDup();
             });
             if (!this.showDisplayFormat) {
                 formatSelector.style.display = 'none';
@@ -560,7 +591,7 @@ class GenPageBrowserClass {
             depthInput.addEventListener('change', () => {
                 this.depth = depthInput.value;
                 localStorage.setItem(`browser_${this.id}_depth`, this.depth);
-                this.update();
+                this.updateWithoutDup();
             });
             if (!this.showDepth) {
                 depthInput.parentElement.style.display = 'none';

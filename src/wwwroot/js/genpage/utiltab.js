@@ -191,11 +191,10 @@ class ModelDownloaderUtil {
         this.civitGreenPrefix = 'https://civitai.green/';
     }
 
-    reloadFolders() {
+    buildFolderSelector(selector) {
         if (!coreModelMap) {
             return;
         }
-        let selected = this.folders.value;
         let html = '<option>(None)</option>';
         let folderList = [];
         for (let submap of Object.values(coreModelMap)) {
@@ -219,7 +218,15 @@ class ModelDownloaderUtil {
         for (let folder of folderList) {
             html += `<option>${folder}</option>\n`;
         }
-        this.folders.innerHTML = html;
+        selector.innerHTML = html;
+    }
+
+    reloadFolders() {
+        if (!coreModelMap) {
+            return;
+        }
+        let selected = this.folders.value;
+        this.buildFolderSelector(this.folders);
         this.folders.value = selected || '(None)';
     }
 
@@ -239,9 +246,9 @@ class ModelDownloaderUtil {
         });
     }
 
-    getCivitaiMetadata(id, versId, callback, identifier = '') {
-        let doError = () => {
-            callback(null, null, null, null, null, null, null);
+    getCivitaiMetadata(id, versId, callback, identifier = '', validateSafe = true) {
+        let doError = (msg = null) => {
+            callback(null, null, null, null, null, null, null, msg);
         }
         genericRequest('ForwardMetadataRequest', { 'url': `${this.civitPrefix}api/v1/models/${id}` }, (rawData) => {
             rawData = rawData.response;
@@ -265,18 +272,30 @@ class ModelDownloaderUtil {
                     }
                 }
             }
-            if (!file.name.endsWith('.safetensors') && !file.name.endsWith('.sft')) {
-                console.log(`refuse civitai url because download url is ${file.downloadUrl} / ${identifier}`);
-                doError();
+            else {
+                for (let vers of rawData.modelVersions) {
+                    for (let vFile of vers.files) {
+                        if (vFile.name.endsWith(`.safetensors`) || vFile.name.endsWith(`.sft`)) {
+                            rawVersion = vers;
+                            file = vFile;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (validateSafe && !file.name.endsWith('.safetensors') && !file.name.endsWith('.sft')) {
+                console.log(`refuse civitai url because download url is ${file.downloadUrl} / ${file.name} / ${identifier}`);
+                doError(`Cannot download model from that URL because it is not a safetensors file. Filename is '${file.name}'`);
                 return;
             }
             if (rawData.type == 'Checkpoint') { modelType = 'Stable-Diffusion'; }
-            if (rawData.type == 'LORA') { modelType = 'LoRA'; }
+            if (['LORA', 'LoCon', 'LyCORIS'].includes(rawData.type)) { modelType = 'LoRA'; }
             if (rawData.type == 'TextualInversion') { modelType = 'Embedding'; }
             if (rawData.type == 'ControlNet') { modelType = 'ControlNet'; }
+            if (rawData.type == 'VAE') { modelType = 'VAE'; }
             let imgs = rawVersion.images ? rawVersion.images.filter(img => img.type == 'image') : [];
             let applyMetadata = (img) => {
-                let url = `${this.civitPrefix}models/${id}?modelVersionId=${versId}`;
+                let url = versId ? `${this.civitPrefix}models/${id}?modelVersionId=${versId}` : `${this.civitPrefix}models/${id}`;
                 metadata = {
                     'modelspec.title': `${rawData.name} - ${rawVersion.name}`,
                     'modelspec.description': `From <a href="${url}">${url}</a>\n${rawVersion.description || ''}\n${rawData.description}\n`,
@@ -294,13 +313,32 @@ class ModelDownloaderUtil {
                 if (img) {
                     metadata['modelspec.thumbnail'] = img;
                 }
-                callback(rawData, rawVersion, metadata, modelType, file.downloadUrl, img, imgs.map(x => x.url));
+                if (['Illustrious', 'Pony'].includes(rawVersion.baseModel)) {
+                    metadata['modelspec.usage_hint'] = rawVersion.baseModel;
+                }
+                callback(rawData, rawVersion, metadata, modelType, file.downloadUrl, img, imgs.map(x => x.url), null);
             }
             if (imgs.length > 0) {
                 imageToData(imgs[0].url, img => applyMetadata(img));
             }
             else {
-                applyMetadata('');
+                let videos = rawVersion.images ? rawVersion.images.filter(img => img.type == 'video') : [];
+                if (videos) {
+                    let url = videos[0].url;
+                    let video = document.createElement('video');
+                    video.crossOrigin = 'Anonymous';
+                    video.onloadeddata = () => {
+                        let canvas = document.createElement('canvas');
+                        canvas.width = video.videoWidth;
+                        canvas.height = video.videoHeight;
+                        canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+                        applyMetadata(canvas.toDataURL());
+                    };
+                    video.src = url;
+                }
+                else {
+                    applyMetadata('');
+                }
             }
         }, 0, (status, data) => {
             doError();
@@ -308,6 +346,7 @@ class ModelDownloaderUtil {
     }
 
     parseCivitaiUrl(url) {
+        url = url.trim();
         if (url.startsWith(this.civitGreenPrefix)) {
             url = this.civitPrefix + url.substring(this.civitGreenPrefix.length);
         }
@@ -335,7 +374,7 @@ class ModelDownloaderUtil {
     }
 
     urlInput() {
-        let url = this.url.value;
+        let url = this.url.value.trim();
         if (url.endsWith('.pt') || url.endsWith('.pth') || url.endsWith('.ckpt') || url.endsWith('.bin')) {
             this.urlStatusArea.innerText = "URL looks to be a pickle file, cannot download. Only safetensors can be auto-downloaded. Pickle files may contain malware.";
             this.button.disabled = true;
@@ -390,9 +429,9 @@ class ModelDownloaderUtil {
                 parts = ['models', parts[1], ''];
             }
             let loadMetadata = (id, versId) => {
-                this.getCivitaiMetadata(id, versId, (rawData, rawVersion, metadata, modelType, url, img, imgs) => {
+                this.getCivitaiMetadata(id, versId, (rawData, rawVersion, metadata, modelType, url, img, imgs, errMsg) => {
                     if (!rawData) {
-                        this.urlStatusArea.innerText = "URL appears to be a CivitAI link, but seems to not be valid. Please double-check the link.";
+                        this.urlStatusArea.innerText = `URL appears to be a CivitAI link, but seems to not be valid. Please double-check the link. ${(errMsg ?? '')}`;
                         this.nameInput();
                         return;
                     }
@@ -436,7 +475,7 @@ class ModelDownloaderUtil {
                                 else {
                                     imageToData(url, (img) => {
                                         imgs[ind] = img;
-                                        this.metadataZone.dataset.image = url;
+                                        this.metadataZone.dataset.image = img;
                                         imgElem.src = img;
                                     });
                                 }
@@ -536,6 +575,11 @@ class ActiveModelDownload {
         this.name = name;
         this.url = url;
         this.image = image;
+        if (image && metadata) {
+            metadata = JSON.parse(metadata);
+            metadata['modelspec.thumbnail'] = image;
+            metadata = JSON.stringify(metadata);
+        }
         this.type = type;
         this.metadata = metadata;
         let cardHtml = `
@@ -608,7 +652,10 @@ class ActiveModelDownload {
             else {
                 this.setBorderColor('#aa0000');
             }
-            this.statusText.innerHTML = `Error: ${escapeHtml(e)}\n<br>${hintInfo}`;
+            this.statusText.innerHTML = `Error: ${escapeHtml(e)}\n<br>${hintInfo}<br><br><button class="basic-button" title="Restart the download" style="width:98%">Retry</button><br><br>`;
+            this.statusText.querySelector('button').onclick = () => {
+                this.download();
+            };
             this.isDone();
         }, socket => {
             this.cancelButton.onclick = () => {
@@ -649,18 +696,23 @@ class ModelMetadataScanner {
         let scanned = 0;
         let updated = 0;
         let failed = 0;
+        let skipped = 0;
         let invalidDescriptions = ['', '(None)', '(Unset)'];
+        let relisted = [];
+        for (let key of list) {
+            if (key.name != '(None)' && nameMatcher(key.name)) {
+                relisted.push(key);
+            }
+        }
+        list = relisted;
         let update = () => {
-            this.resultArea.innerText = `${running} scans currently running, already scanned ${scanned} models, ${failed} couldn't be found on civitai, ${updated} models updated with new metadata.`;
+            this.resultArea.innerText = `${running} scans currently running, already scanned ${scanned} models, ${failed} couldn't be found on civitai, ${skipped} skipped, ${updated} models updated with new metadata. Remaining: ${list.length - scanned - failed - skipped} / ${list.length}`;
         };
         let removeOne = () => {
             running--;
             update();
         }
         for (let key of list) {
-            if (key.name == '(None)' || !nameMatcher(key.name)) {
-                continue;
-            }
             while (running >= this.maxSimulLoads) {
                 await new Promise(resolve => setTimeout(resolve, 200));
             }
@@ -678,6 +730,7 @@ class ModelMetadataScanner {
                         limit *= 31;
                     }
                     if (timeNow - createTime > limit) {
+                        skipped++;
                         removeOne();
                         return;
                     }
@@ -698,13 +751,14 @@ class ModelMetadataScanner {
                         allowed = false;
                     }
                     if (!allowed) {
+                        skipped++;
                         removeOne();
                         return;
                     }
                 }
                 let doApply = () => {
                     let [id, versId] = modelDownloader.parseCivitaiUrl(civitUrl);
-                    modelDownloader.getCivitaiMetadata(id, versId, (rawData, rawVersion, metadata, modelType, url, img, imgs) => {
+                    modelDownloader.getCivitaiMetadata(id, versId, (rawData, rawVersion, metadata, modelType, url, img, imgs, errMsg) => {
                         if (!rawData) {
                             failed++;
                             removeOne();
@@ -718,12 +772,13 @@ class ModelMetadataScanner {
                             model.author = metadata['modelspec.author'] || model.author;
                             model.date = metadata['modelspec.date'] || model.date;
                             model.trigger_phrase = metadata['modelspec.trigger_phrase'] || model.trigger_phrase;
+                            model.usage_hint = metadata['modelspec.usage_hint'] || model.usage_hint;
                             if (metadata['modelspec.tags']) {
                                 model.tags = metadata['modelspec.tags'].split(',').map(x => x.trim());
                             }
                         }
                         else if (replace == 'only_missing') {
-                            if (img && !model.preview_image) {
+                            if (img && (!model.preview_image || model.preview_image == 'imgs/model_placeholder.jpg')) {
                                 model.preview_image = img;
                             }
                             model.title = model.title || metadata['modelspec.title'];
@@ -731,6 +786,7 @@ class ModelMetadataScanner {
                             model.author = model.author || metadata['modelspec.author'];
                             model.date = model.date || metadata['modelspec.date'];
                             model.trigger_phrase = model.trigger_phrase || metadata['modelspec.trigger_phrase'];
+                            model.usage_hint = model.usage_hint || metadata['modelspec.usage_hint'];
                             if (metadata['modelspec.tags'] && !model.tags) {
                                 model.tags = metadata['modelspec.tags'].split(',').map(x => x.trim());
                             }
@@ -744,6 +800,7 @@ class ModelMetadataScanner {
                             model.author = metadata['modelspec.author'] || model.author;
                             model.date = metadata['modelspec.date'] || model.date;
                             model.trigger_phrase = metadata['modelspec.trigger_phrase'] || model.trigger_phrase;
+                            model.usage_hint = metadata['modelspec.usage_hint'] || model.usage_hint;
                             if (metadata['modelspec.tags']) {
                                 model.tags = metadata['modelspec.tags'].split(',').map(x => x.trim());
                             }
@@ -751,12 +808,12 @@ class ModelMetadataScanner {
                         scanned++;
                         update();
                         let tagsMatch = (!model.tags == !backup.tags) && (!model.tags || backup.tags.join(', ') == model.tags.join(', '));
-                        let anyChanged = backup.preview_image != model.preview_image || backup.title != model.title || backup.description != model.description || backup.author != model.author || backup.date != model.date || backup.trigger_phrase != model.trigger_phrase || !tagsMatch;
+                        let anyChanged = backup.preview_image != model.preview_image || backup.title != model.title || backup.description != model.description || backup.author != model.author || backup.date != model.date || backup.trigger_phrase != model.trigger_phrase || backup.usage_hint != model.usage_hint || !tagsMatch;
                         if (!anyChanged) {
                             removeOne();
                             return;
                         }
-                        console.log(`Model ${key.name} (${key.type}) - change report: image: ${backup.preview_image != model.preview_image}, title: ${backup.title != model.title}, description: ${backup.description != model.description}, author: ${backup.author != model.author}, date: ${backup.date != model.date}, trigger: ${backup.trigger_phrase != model.trigger_phrase}, tags: ${!tagsMatch}`);
+                        console.log(`Model ${key.name} (${key.type}) - change report: image: ${backup.preview_image != model.preview_image}, title: ${backup.title != model.title}, description: ${backup.description != model.description}, author: ${backup.author != model.author}, date: ${backup.date != model.date}, trigger: ${backup.trigger_phrase != model.trigger_phrase}, usage_hint: ${backup.usage_hint != model.usage_hint}, tags: ${!tagsMatch}`);
                         let newMetadata = {
                             'model': key.name,
                             'subtype': key.type,
@@ -770,6 +827,7 @@ class ModelMetadataScanner {
                             'date': model.date || '',
                             'license': model.license || '',
                             'trigger_phrase': model.trigger_phrase || '',
+                            'usage_hint': model.usage_hint || '',
                             'prediction_type': model.prediction_type || '',
                             'tags': model.tags ? model.tags.join(', ') : null,
                             'preview_image': model.preview_image == "imgs/model_placeholder.jpg" ? null : model.preview_image,
@@ -783,7 +841,7 @@ class ModelMetadataScanner {
                             failed++;
                             removeOne();
                         });
-                    }, model.name);
+                    }, model.name, false);
                 };
                 if (civitUrl) {
                     doApply();
@@ -811,8 +869,7 @@ class ModelMetadataScanner {
                         }, 0, e => { failed++; removeOne(); });
                     }
                 }
-
-            }, 0, e => { removeOne(); });
+            }, 0, e => {  failed++; removeOne(); });
         }
         while (running > 0) {
             await new Promise(resolve => setTimeout(resolve, 200));

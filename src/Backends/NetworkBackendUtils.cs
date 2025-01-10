@@ -340,6 +340,8 @@ public static class NetworkBackendUtils
             };
             PythonLaunchHelper.CleanEnvironmentOfPythonMess(start, $"({nameSimple} launch) ");
             start.Environment["CUDA_VISIBLE_DEVICES"] = $"{gpuId}";
+            start.Environment["HIP_VISIBLE_DEVICES"] = $"{gpuId}";
+            start.Environment["ROCR_VISIBLE_DEVICES"] = $"{gpuId}";
             string preArgs = "";
             string postArgs = extraArgs.Replace("{PORT}", $"{port}").Trim();
             if (path.EndsWith(".py"))
@@ -366,26 +368,39 @@ public static class NetworkBackendUtils
                 if (everLoaded && !Program.GlobalProgramCancel.IsCancellationRequested)
                 {
                     Logs.Error($"Self-Start {nameSimple} on port {port} failed. Restarting per configuration AutoRestart=true...");
-                    (HardwareInfo, float)[] info = [.. SystemStatusMonitor.HardwareInfoQueue.Select(x => (x, x.MemoryStatus.AvailableVirtual / (float)x.MemoryStatus.TotalVirtual)).Where(x => x.Item2 > 0.8)];
-                    if (info.Any())
+                    Func<HardwareInfo, float> memSelector = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? x => 1 - (x.MemoryStatus.AvailablePhysical / (float)x.MemoryStatus.TotalPhysical) : x => 1 - (x.MemoryStatus.AvailableVirtual / (float)x.MemoryStatus.TotalVirtual);
+                    (HardwareInfo, float)[] info = [.. SystemStatusMonitor.HardwareInfoQueue.Select(x => (x, memSelector(x)))];
+                    Logs.Debug($"Memory usage before crash was: {info.Reverse().Take(5).Select(x => $"{x.Item2 * 100:#.0}%").JoinString(", ")}");
+                    (HardwareInfo, float) match = info.FirstOrDefault(x => x.Item2 > 0.8);
+                    if (match.Item1 is not null)
                     {
-                        Logs.Warning($"Your system memory usage exceeded {info[0].Item2 * 100:#.0}% just before the backend process failed. This might indicate a memory overload.");
-                        ulong virtualMem = info[0].Item1.MemoryStatus.TotalVirtual - info[0].Item1.MemoryStatus.TotalPhysical;
-                        if (virtualMem < 16ul * 1024 * 1024 * 1024 || virtualMem * 2 < info[0].Item1.MemoryStatus.TotalPhysical)
+                        Logs.Warning("\n\n");
+                        Logs.Warning($"Your system memory usage exceeded {match.Item2 * 100:#.0}% just before the backend process failed. This might indicate a memory overload.");
+                        ulong virtualMem = match.Item1.MemoryStatus.TotalVirtual - match.Item1.MemoryStatus.TotalPhysical;
+                        float gigs = new MemoryNum((long)virtualMem).GiB;
+                        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) // Windows API reports virtual memory weirdly, so just sub in page file here, seems to be more accurate
+                        {
+                            virtualMem = match.Item1.MemoryStatus.TotalPageFile;
+                            gigs = new MemoryNum((long)virtualMem).GiB;
+                        }
+                        if (gigs < 32 || virtualMem * 2 < match.Item1.MemoryStatus.TotalPhysical)
                         {
                             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                             {
-                                Logs.Warning($"You appear to have a small or disabled pagefile. You should enable/expand it to prevent memory oveloads. See https://www.windowscentral.com/software-apps/windows-11/how-to-manage-virtual-memory-on-windows-11 for more info.");
+                                Logs.Warning($"You appear to have a small or disabled pagefile ({gigs:0.#} GiB). You should enable/expand it to prevent memory oveloads. See https://www.windowscentral.com/software-apps/windows-11/how-to-manage-virtual-memory-on-windows-11 for more info. Size it to at least 16GiB (larger is better, 32GiB+ recommended).");
                             }
                             else
                             {
-                                Logs.Warning("You appear to have a small or disabled system swapfile. Please research how to enable one on your OS, and size it to at least 16GiB (larger is better).");
+                                Logs.Warning($"You appear to have a small or disabled system swapfile ({gigs:0.#} GiB). Please research how to enable one on your OS, and size it to at least 16GiB (larger is better, 32GiB+ recommended).");
                             }
                         }
                         else
                         {
-                            Logs.Warning("You appear to have a sufficient pagefile, so you might have too many background processes, or you might just be trying to run too much.\nConsider closing background processes, or greatly expanding your pagefile size.\nOr, reduce the size of what you're trying to run. If you're running an FP16 or FP8 model, consider a quantized variant like GGUF Q4.");
+                            Logs.Warning($"You appear to have a sufficient pagefile ({gigs:0.#} GiB), so you might have too many background processes, or you might just be trying to run too much.");
+                            Logs.Warning("Consider closing background processes, or greatly expanding your pagefile size.");
+                            Logs.Warning("Or, reduce the size of what you're trying to run. If you're running an FP16 or FP8 model, consider a quantized variant like GGUF Q4.");
                         }
+                        Logs.Warning("\n\n");
                     }
                     Utilities.RunCheckedTask(async () =>
                     {

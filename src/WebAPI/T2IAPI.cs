@@ -4,7 +4,6 @@ using Newtonsoft.Json.Linq;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Processing;
 using SwarmUI.Accounts;
-using SwarmUI.Backends;
 using SwarmUI.Core;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
@@ -26,15 +25,15 @@ public static class T2IAPI
     public static void Register()
     {
         // TODO: Some of these shouldn't be here?
-        API.RegisterAPICall(GenerateText2Image, true);
-        API.RegisterAPICall(GenerateText2ImageWS, true);
-        API.RegisterAPICall(AddImageToHistory);
-        API.RegisterAPICall(ListImages);
-        API.RegisterAPICall(ToggleImageStarred, true);
-        API.RegisterAPICall(OpenImageFolder, true);
-        API.RegisterAPICall(DeleteImage, true);
-        API.RegisterAPICall(ListT2IParams);
-        API.RegisterAPICall(TriggerRefresh);
+        API.RegisterAPICall(GenerateText2Image, true, Permissions.BasicImageGeneration);
+        API.RegisterAPICall(GenerateText2ImageWS, true, Permissions.BasicImageGeneration);
+        API.RegisterAPICall(AddImageToHistory, true, Permissions.BasicImageGeneration);
+        API.RegisterAPICall(ListImages, false, Permissions.ViewImageHistory);
+        API.RegisterAPICall(ToggleImageStarred, true, Permissions.UserStarImages);
+        API.RegisterAPICall(OpenImageFolder, true, Permissions.LocalImageFolder);
+        API.RegisterAPICall(DeleteImage, true, Permissions.UserDeleteImage);
+        API.RegisterAPICall(ListT2IParams, false, Permissions.FundamentalGenerateTabAccess);
+        API.RegisterAPICall(TriggerRefresh, true, Permissions.FundamentalGenerateTabAccess); // Intentionally weird perm here: internal check for readonly vs true refresh
     }
 
     [API.APIDescription("Generate images from text prompts, with WebSocket updates. This is the most important route inside of Swarm.",
@@ -80,7 +79,68 @@ public static class T2IAPI
         [API.APIParameter("The number of images to generate.")] int images,
         [API.APIParameter("Raw mapping of input should contain general T2I parameters (see listing on Generate tab of main interface) to values, eg `{ \"prompt\": \"a photo of a cat\", \"model\": \"OfficialStableDiffusion/sd_xl_base_1.0\", \"steps\": 20, ... }`. Note that this is the root raw map, ie all params go on the same level as `images`, `session_id`, etc.")] JObject rawInput)
     {
-        await API.RunWebsocketHandlerCallWS(GenT2I_Internal, session, (images, rawInput), socket);
+        using CancellationTokenSource cancelTok = new();
+        bool retain = false, ended = false;
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(Program.GlobalProgramCancel, cancelTok.Token);
+        SharedGenT2IData data = new();
+        ConcurrentDictionary<Task, Task> tasks = [];
+        static int guessBatchSize(JObject input)
+        {
+            if (input.TryGetValue("batchsize", out JToken batch))
+            {
+                return batch.Value<int>();
+            }
+            return 1;
+        }
+        _ = Utilities.RunCheckedTask(async () =>
+        {
+            try
+            {
+                int batchOffset = images * guessBatchSize(rawInput);
+                while (!cancelTok.IsCancellationRequested)
+                {
+                    byte[] rec = await socket.ReceiveData(1024 * 1024 * 256, linked.Token);
+                    Volatile.Write(ref retain, true);
+                    if (socket.State != WebSocketState.Open || cancelTok.IsCancellationRequested || Volatile.Read(ref ended))
+                    {
+                        return;
+                    }
+                    JObject newInput = StringConversionHelper.UTF8Encoding.GetString(rec).ParseToJson();
+                    int newImages = newInput.Value<int>("images");
+                    Task handleMore = API.RunWebsocketHandlerCallWS(GenT2I_Internal, session, (newImages, newInput, data, batchOffset), socket);
+                    tasks.TryAdd(handleMore, handleMore);
+                    Volatile.Write(ref retain, false);
+                    batchOffset += newImages * guessBatchSize(newInput);
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                return;
+            }
+            finally
+            {
+                Volatile.Write(ref retain, false);
+            }
+        });
+        Task handle = API.RunWebsocketHandlerCallWS(GenT2I_Internal, session, (images, rawInput, data, 0), socket);
+        tasks.TryAdd(handle, handle);
+        while (Volatile.Read(ref retain) || tasks.Any())
+        {
+            await Task.WhenAny(tasks.Keys.ToList());
+            foreach (Task t in tasks.Keys.Where(t => t.IsCompleted).ToList())
+            {
+                tasks.TryRemove(t, out _);
+            }
+            if (tasks.IsEmpty())
+            {
+                await socket.SendJson(new JObject() { ["socket_intention"] = "close" }, API.WebsocketTimeout);
+                await Task.Delay(TimeSpan.FromSeconds(2)); // Give 2 seconds to allow a new gen request before actually closing
+                if (tasks.IsEmpty())
+                {
+                    Volatile.Write(ref ended, true);
+                }
+            }
+        }
         await socket.SendJson(BasicAPIFeatures.GetCurrentStatusRaw(session), API.WebsocketTimeout);
         return null;
     }
@@ -100,7 +160,7 @@ public static class T2IAPI
         [API.APIParameter("The number of images to generate.")] int images,
         [API.APIParameter("Raw mapping of input should contain general T2I parameters (see listing on Generate tab of main interface) to values, eg `{ \"prompt\": \"a photo of a cat\", \"model\": \"OfficialStableDiffusion/sd_xl_base_1.0\", \"steps\": 20, ... }`. Note that this is the root raw map, ie all params go on the same level as `images`, `session_id`, etc.")] JObject rawInput)
     {
-        List<JObject> outputs = await API.RunWebsocketHandlerCallDirect(GenT2I_Internal, session, (images, rawInput));
+        List<JObject> outputs = await API.RunWebsocketHandlerCallDirect(GenT2I_Internal, session, (images, rawInput, new SharedGenT2IData(), 0));
         Dictionary<int, string> imageOutputs = [];
         int[] discards = null;
         foreach (JObject obj in outputs)
@@ -169,10 +229,15 @@ public static class T2IAPI
         return user_input;
     }
 
-    /// <summary>Internal route for generating images.</summary>
-    public static async Task GenT2I_Internal(Session session, (int, JObject) input, Action<JObject> output, bool isWS)
+    public class SharedGenT2IData
     {
-        (int images, JObject rawInput) = input;
+        public int NumExtra, NumNonReal;
+    }
+
+    /// <summary>Internal route for generating images.</summary>
+    public static async Task GenT2I_Internal(Session session, (int, JObject, SharedGenT2IData, int) input, Action<JObject> output, bool isWS)
+    {
+        (int images, JObject rawInput, SharedGenT2IData data, int batchOffset) = input;
         using Session.GenClaim claim = session.Claim(gens: images);
         void setError(string message)
         {
@@ -212,9 +277,8 @@ public static class T2IAPI
                 }
             }
         }
-        int max_degrees = session.User.Restrictions.CalcMaxT2ISimultaneous;
+        int max_degrees = session.User.CalcMaxT2ISimultaneous;
         List<int> discard = [];
-        int numExtra = 0, numNonReal = 0;
         int batchSizeExpected = user_input.Get(T2IParamTypes.BatchSize, 1);
         void saveImage(T2IEngine.ImageOutput image, int actualIndex, T2IParamInput thisParams, string metadata)
         {
@@ -240,7 +304,7 @@ public static class T2IAPI
             {
                 imageSet.Add(image);
             }
-            WebhookManager.SendEveryGenWebhook(thisParams, url);
+            WebhookManager.SendEveryGenWebhook(thisParams, url, image.Img);
             output(new JObject() { ["image"] = url, ["batch_index"] = $"{actualIndex}", ["metadata"] = string.IsNullOrWhiteSpace(metadata) ? null : metadata });
         }
         for (int i = 0; i < images && !claim.ShouldCancel; i++)
@@ -255,17 +319,18 @@ public static class T2IAPI
             {
                 break;
             }
-            int imageIndex = i * batchSizeExpected;
+            int localIndex = i * batchSizeExpected;
+            int imageIndex = localIndex + batchOffset;
             T2IParamInput thisParams = user_input.Clone();
             if (!thisParams.Get(T2IParamTypes.NoSeedIncrement, false))
             {
                 if (thisParams.TryGet(T2IParamTypes.VariationSeed, out long varSeed) && thisParams.Get(T2IParamTypes.VariationSeedStrength) > 0)
                 {
-                    thisParams.Set(T2IParamTypes.VariationSeed, varSeed + imageIndex);
+                    thisParams.Set(T2IParamTypes.VariationSeed, varSeed + localIndex);
                 }
                 else
                 {
-                    thisParams.Set(T2IParamTypes.Seed, thisParams.Get(T2IParamTypes.Seed) + imageIndex);
+                    thisParams.Set(T2IParamTypes.Seed, thisParams.Get(T2IParamTypes.Seed) + localIndex);
                 }
             }
             int numCalls = 0;
@@ -278,12 +343,12 @@ public static class T2IAPI
                         numCalls++;
                         if (numCalls > batchSizeExpected)
                         {
-                            actualIndex = images * batchSizeExpected + Interlocked.Increment(ref numExtra);
+                            actualIndex = images * batchSizeExpected + Interlocked.Increment(ref data.NumExtra);
                         }
                     }
                     else
                     {
-                        actualIndex = -10 - Interlocked.Increment(ref numNonReal);
+                        actualIndex = -10 - Interlocked.Increment(ref data.NumNonReal);
                     }
                     saveImage(image, actualIndex, thisParams, metadata);
                 })));
@@ -477,7 +542,7 @@ public static class T2IAPI
                 }
                 string prefix = folder == "" ? "" : folder + "/";
                 List<string> subFiles = Directory.EnumerateFiles($"{path}/{prefix}").Take(localLimit).ToList();
-                IEnumerable<string> newFileNames = subFiles.Where(isAllowed).Where(f => extensions.Contains(f.AfterLast('.'))).Select(f => f.Replace('\\', '/'));
+                IEnumerable<string> newFileNames = subFiles.Where(isAllowed).Where(f => extensions.Contains(f.AfterLast('.')) && !f.EndsWith(".swarmpreview.jpg") && !f.EndsWith(".swarmpreview.webp")).Select(f => f.Replace('\\', '/'));
                 List<ImageHistoryHelper> localFiles = [.. newFileNames.Select(f => new ImageHistoryHelper(prefix + f.AfterLast('/'), ImageMetadataTracker.GetMetadataFor(f, root, starNoFolders))).Where(f => f.Metadata is not null)];
                 int leftOver = Interlocked.Add(ref remaining, -localFiles.Count);
                 sortList(localFiles);
@@ -550,6 +615,8 @@ public static class T2IAPI
         return new JObject() { ["success"] = true };
     }
 
+    public static string[] DeletableFileExtensions = [".txt", ".metadata.js", ".swarm.json", ".swarmpreview.jpg", ".swarmpreview.webp"];
+
     [API.APIDescription("Delete an image from history.", "\"success\": true")]
     public static async Task<JObject> DeleteImage(Session session,
         [API.APIParameter("The path to the image to delete.")] string path)
@@ -567,17 +634,18 @@ public static class T2IAPI
             Logs.Warning($"User {session.User.UserID} tried to delete image path '{origPath}' which maps to '{path}', but cannot as the image does not exist.");
             return new JObject() { ["error"] = "That file does not exist, cannot delete." };
         }
+        string standardizedPath = Path.GetFullPath(path);
+        Session.RecentlyDeletedFilenames[standardizedPath] = standardizedPath;
         Action<string> deleteFile = Program.ServerSettings.Paths.RecycleDeletedImages ? Utilities.SendFileToRecycle : File.Delete;
         deleteFile(path);
-        string txtFile = path.BeforeLast('.') + ".txt";
-        if (File.Exists(txtFile))
+        string fileBase = path.BeforeLast('.');
+        foreach (string str in DeletableFileExtensions)
         {
-            deleteFile(txtFile);
-        }
-        string metaFile = path.BeforeLast('.') + ".metadata.js";
-        if (File.Exists(metaFile))
-        {
-            deleteFile(metaFile);
+            string altFile = $"{fileBase}{str}";
+            if (File.Exists(altFile))
+            {
+                deleteFile(altFile);
+            }
         }
         ImageMetadataTracker.RemoveMetadataFor(path);
         return new JObject() { ["success"] = true };
@@ -661,7 +729,7 @@ public static class T2IAPI
 
     public static SemaphoreSlim RefreshSemaphore = new(1, 1);
 
-    [API.APIDescription("Trigger a refresh of the server's data, returning parameter data.",
+    [API.APIDescription("Trigger a refresh of the server's data, returning parameter data. Requires permission 'control_model_refresh' to actually take effect, otherwise just pulls latest data.",
         """
             // see `ListT2IParams` for details
             "list": [...],
@@ -674,6 +742,11 @@ public static class T2IAPI
     {
         Logs.Verbose($"User {session.User.UserID} triggered a {(strong ? "strong" : "weak")} data refresh");
         bool botherToRun = strong && RefreshSemaphore.CurrentCount > 0; // no need to run twice at once
+        if (!session.User.HasPermission(Permissions.ControlModelRefresh))
+        {
+            Logs.Debug($"User {session.User.UserID} requested refresh, but will not perform actual refresh as they lack permission.");
+            botherToRun = false;
+        }
         try
         {
             await RefreshSemaphore.WaitAsync(Program.GlobalProgramCancel);
@@ -751,7 +824,7 @@ public static class T2IAPI
         }
         return new JObject()
         {
-            ["list"] = new JArray(T2IParamTypes.Types.Values.Select(v => v.ToNet(session)).ToList()),
+            ["list"] = new JArray(T2IParamTypes.Types.Values.Where(p => p.Permission is null || session.User.HasPermission(p.Permission)).Select(v => v.ToNet(session)).ToList()),
             ["models"] = modelData,
             ["wildcards"] = new JArray(WildcardsHelper.ListFiles),
             ["param_edits"] = string.IsNullOrWhiteSpace(session.User.Data.RawParamEdits) ? null : JObject.Parse(session.User.Data.RawParamEdits)

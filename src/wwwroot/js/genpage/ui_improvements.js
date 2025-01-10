@@ -5,7 +5,7 @@ let lastPopoverTime = 0, lastPopover = null;
 
 class AdvancedPopover {
     /**
-     * eg: new AdvancedPopover('my_popover', [ { key: 'Button 1', action: () => console.log("Clicked!") } ], true, mouseX, mouseY, document.body, null);
+     * eg: new AdvancedPopover('my_popover_name', [ { key: 'Button 1', action: () => console.log("Clicked!") } ], true, mouseX, mouseY, document.body, null);
      * Buttons can optionally exclude action to make unclickable.
      */
     constructor(id, buttons, canSearch, x, y, root, preSelect = null, flipYHeight = null, heightLimit = 999999, canSelect = true) {
@@ -74,6 +74,9 @@ class AdvancedPopover {
                 }
                 else {
                     optionDiv.innerText = button.key;
+                }
+                if (button.title) {
+                    optionDiv.title = button.title;
                 }
                 if (button.key == selected) {
                     optionDiv.classList.add('sui_popover_model_button_selected');
@@ -369,6 +372,63 @@ class UIImprovementHandler {
                 lastY = 0;
             }
         }, true);
+        let isDoingADrag = false;
+        document.addEventListener('dragenter', (e) => {
+            if (isDoingADrag) {
+                return;
+            }
+            isDoingADrag = true;
+            let files = this.getFileList(e.dataTransfer, e);
+            console.log('dragenter', files, e);
+            if (files.length > 0 && files.filter(f => f.type.startsWith('image/')).length > 0) {
+                let targets = document.getElementsByClassName('drag_image_target');
+                for (let target of targets) {
+                    target.classList.add('drag_image_target_highlight');
+                }
+            }
+        }, true);
+        function clearDrag() {
+            setTimeout(() => {
+                isDoingADrag = false;
+                let targets = document.getElementsByClassName('drag_image_target'); // intentionally don't search "_highlight" due to browse misbehavior
+                for (let target of targets) {
+                    target.classList.remove('drag_image_target_highlight');
+                }
+            }, 1);
+        }
+        document.addEventListener('drop', (e) => {
+            clearDrag();
+        }, true);
+        document.addEventListener('dragleave', (e) => {
+            if (e.clientY <= 0 || e.clientX <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
+                clearDrag();
+            }
+        }, true);
+    }
+
+    /** Returns a list of files from the given dataTransfer object, auto-correcting for browsers inconsistently handling certain drag types. */
+    getFileList(dataTransfer, e) {
+        if (!dataTransfer) {
+            return [];
+        }
+        let files = dataTransfer.files;
+        if (!files || !files.length) {
+            files = [...dataTransfer.items || []].filter(item => item.kind == "file");
+        }
+        if (!files.length) {
+            let uris = dataTransfer.getData('text/uri-list');
+            if (uris) {
+                files = uris.split('\n');
+            }
+            files = files.map(f => new File([f], f, {type: guessMimeTypeForExtension(f)}));
+        }
+        if (!files.length && e && e.srcElement) {
+            let img = e.srcElement;
+            if (img.tagName == 'IMG') {
+                files = [new File([img.src], img.src, {type: guessMimeTypeForExtension(img.src)})];
+            }
+        }
+        return files;
     }
 
     getLastSelectedTextbox() {
@@ -399,11 +459,36 @@ class UIImprovementHandler {
         }
         let popId = `uiimprover_${elem.id}`;
         let rect = elem.getBoundingClientRect();
-        let buttons = [...elem.options].filter(o => o.style.display != 'none').map(o => { return { key_html: o.dataset.cleanname, key: o.innerText, searchable: `${o.dataset.cleanname} ${o.innerText} ${o.value}`, action: () => { elem.value = o.value; triggerChangeFor(elem); } }; })
+        let buttons = [...elem.options].filter(o => o.style.display != 'none').map(o => { return { key_html: o.dataset.cleanname, title: o.title, key: o.innerText, searchable: `${o.dataset.cleanname} ${o.innerText} ${o.value}`, action: () => { elem.value = o.value; triggerChangeFor(elem); } }; })
         this.lastPopover = new AdvancedPopover(popId, buttons, true, rect.x, rect.y, elem.parentElement, elem.selectedIndex < 0 ? null : elem.selectedOptions[0].innerText, 0);
         e.preventDefault();
         e.stopPropagation();
         return false;
+    }
+
+    /** This used to be a CSS Animation, but browsers try so hard to make those pretty and smooth that it makes a noticeable GPU perf impact. Ow. */
+    runLoadSpinner(div) {
+        setTimeout(() => {
+            let s1 = div.querySelector('.loadspin1');
+            if (!s1) {
+                return;
+            }
+            let s2 = div.querySelector('.loadspin2');
+            let s3 = div.querySelector('.loadspin3');
+            let interval;
+            let time = 0;
+            let step = 0.05;
+            interval = setInterval(() => {
+                if (!div.isConnected || div.style.display == 'none' || !s1) {
+                    clearInterval(interval);
+                    return;
+                }
+                time += step;
+                s1.style.transform = `rotate(${((time - 0.45) / 1.2) * 360}deg)`;
+                s2.style.transform = `rotate(${((time - 0.3) / 1.2) * 360}deg)`;
+                s3.style.transform = `rotate(${((time - 0.15) / 1.2) * 360}deg)`;
+            }, step * 1000);
+        }, 100);
     }
 }
 
@@ -495,4 +580,23 @@ function doPopover(id, e) {
         e.preventDefault();
         e.stopImmediatePropagation();
     }
+}
+
+/** Shows a notice popover with the given text and color. */
+function doNoticePopover(text, className, targetX = mouseX, targetY = mouseY) {
+    let pop = createDiv(null, `sui-popover sui_popover_model ${className} sui-popover-notice`);
+    pop.style.width = '200px';
+    let x = Math.min(targetX, window.innerWidth - pop.offsetWidth - 10);
+    let y = Math.min(targetY, window.innerHeight - pop.offsetHeight);
+    pop.style.left = `${x}px`;
+    pop.style.top = `${y}px`;
+    pop.style.width = '';
+    pop.innerText = translate(text);
+    document.body.appendChild(pop);
+    setTimeout(() => {
+        pop.classList.add('sui-popover-notice-fade-1s');
+        setTimeout(() => {
+            pop.remove();
+        }, 1500);
+    }, 1000);
 }

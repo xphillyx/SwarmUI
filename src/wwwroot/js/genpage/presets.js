@@ -191,11 +191,21 @@ function updatePresetList() {
             }
         }
     }
+    localStorage.setItem('current_presets', currentPresets.map(p => p.title).join('|||'));
     getRequiredElementById('current_presets_wrapper').style.display = currentPresets.length > 0 ? 'inline-block' : 'none';
     getRequiredElementById('preset_info_slot').innerText = ` (${currentPresets.length}, overriding ${overrideCount} params)`;
     setTimeout(() => {
         setPageBarsFunc();
     }, 1);
+}
+
+function selectInitialPresetList() {
+    let presetList = localStorage.getItem('current_presets');
+    if (presetList) {
+        currentPresets = presetList.split('|||').map(p => getPresetByTitle(p)).filter(p => p);
+        updatePresetList();
+        presetBrowser.rerender();
+    }
 }
 
 function applyOnePreset(preset) {
@@ -327,7 +337,9 @@ function describePreset(preset) {
             }
         } }
     ];
-    let description = `${preset.data.title}:\n${preset.data.description}\n\n${Object.keys(preset.data.param_map).map(key => `${key}: ${preset.data.param_map[key]}`).join('\n')}`;
+    let paramText = Object.keys(preset.data.param_map).map(key => `${key}: ${preset.data.param_map[key]}`);
+    let description = `${preset.data.title}:\n${preset.data.description}\n\n${paramText.join('\n')}`;
+    let detail_list = [escapeHtml(preset.data.title), escapeHtml(preset.data.description), escapeHtmlNoBr(paramText.join('\n').replaceAll('\n', '&emsp;'))];
     let className = currentPresets.some(p => p.title == preset.data.title) ? 'preset-block-selected preset-block' : 'preset-block';
     let name = preset.data.title;
     let index = name.lastIndexOf('/');
@@ -335,7 +347,7 @@ function describePreset(preset) {
         name = name.substring(index + 1);
     }
     let searchable = description;
-    return { name, description: escapeHtml(description), buttons, 'image': preset.data.preview_image, className, searchable };
+    return { name, description: escapeHtml(description), buttons, 'image': preset.data.preview_image, className, searchable, detail_list };
 }
 
 function selectPreset(preset) {
@@ -403,7 +415,33 @@ function importPresetsToData(text) {
     }
     if (text.startsWith('name,prompt,negative_prompt')) {
         data = {};
-        let lines = text.split('\n');
+        let lines = [];
+        let isQuoted = false;
+        let piece = '';
+        let skipNext = false;
+        for (let char of text) {
+            if (char == '\\') {
+                piece += char;
+                skipNext = true;
+                continue;
+            }
+            if (skipNext) {
+                piece += char;
+                skipNext = false;
+                continue;
+            }
+            if (char == '"') {
+                isQuoted = !isQuoted;
+            }
+            if (char == '\n' && !isQuoted) {
+                lines.push(piece);
+                piece = '';
+            }
+            else {
+                piece += char;
+            }
+        }
+        lines.push(piece);
         for (let line of lines.slice(1)) {
             if (line.trim() == '') {
                 continue;

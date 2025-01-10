@@ -1,10 +1,10 @@
 # SwarmUI
 
-**SwarmUI v0.9.3 Beta**.
+**SwarmUI v0.9.4 Beta**.
 
 Formerly known as StableSwarmUI.
 
-A Modular AI Image Generation Web-User-Interface, with an emphasis on making powertools easily accessible, high performance, and extensibility. Supports Stable Diffusion, Flux, etc. AI image models, with plans to support AI video, audio, and more in the future.
+A Modular AI Image Generation Web-User-Interface, with an emphasis on making powertools easily accessible, high performance, and extensibility. Supports Stable Diffusion, Flux, etc. AI image models, and AI video models (LTX-V, Hunyuan Video, etc.), with plans to support eg audio and more in the future.
 
 ![ui-screenshot](.github/images/swarmui.jpg)
 
@@ -82,6 +82,7 @@ Note: if you're on Windows 10, you may need to manually install [git](https://gi
 
 - Install `git`, `python3` via your OS package manager if they are not already installed (make sure to include `pip` and `venv` on distros that do not include them in python directly)
     - For example, on recent Ubuntu versions, `sudo apt install git python3-pip python3-venv`
+    - You'll want Python 3.11. Things should also work fine with 3.10 or 3.12. Do not use 3.13.
 - Install DotNET 8 using the instructions at https://dotnet.microsoft.com/en-us/download/dotnet/8.0 (you need `dotnet-sdk-8.0`, as that includes all relevant sub-packages)
     - Some users [have said](https://github.com/Stability-AI/StableSwarmUI/pull/6) that certain Linux distros expect `aspnet-runtime` to be installed separately
 - Open a shell terminal and `cd` to a directory you want to install into
@@ -89,6 +90,7 @@ Note: if you're on Windows 10, you may need to manually install [git](https://gi
     - `git clone https://github.com/mcmonkeyprojects/SwarmUI`
     - cd `SwarmUI`
     - `./launch-linux.sh`
+    - or if running on a headless server, `./launch-linux.sh --launch_mode none --host 0.0.0.0` and/or swap host for [cloudflared](/docs/Advanced%20Usage.md)
 - open `http://localhost:7801/Install` (if it doesn't launch itself)
 - Follow the install instructions on-page.
 
@@ -96,13 +98,14 @@ Note: if you're on Windows 10, you may need to manually install [git](https://gi
 
 # Installing on Mac
 
-> **Note**: You can only run SwarmUI on Mac computers with M1 or M2 (Mx) Apple silicon processors.
+> **Note**: You can only run SwarmUI on Mac computers with M-Series Apple silicon processors (eg M1, M2, ...).
 
 - Open Terminal.
 - Ensure your `brew` packages are updated with `brew update`.
 - Verify your `brew` installation with `brew doctor`. You should not see any error in the command output.
 - Install .NET for macOS: `brew install dotnet`.
-- If you don't have Python, install it: `brew install python@3.10` and `brew install virtualenv`
+- If you don't have Python, install it: `brew install python@3.11` and `brew install virtualenv`
+    - Python 3.11, 3.10, 3.12 are all fine. 3.13 is not, do not use 3.13.
 - Change the directory (`cd`) to the folder where you want to install SwarmUI.
 - Clone the SwarmUI GitHub repository: `git clone https://github.com/mcmonkeyprojects/SwarmUI`.
 - `cd SwarmUI` and run the installation script: `./launch-macos.sh`.
@@ -111,16 +114,9 @@ The installation starts now and downloads the Stable Diffusion models from the i
 
 > During the SwarmUI installation, you are prompted for the type of backend you want to use. For Mac computers with M1 or M2, you can safely choose the ComfyUI backend and choose the Stable Diffusion XL Base and Refiner models in the Download Models screen.
 
-# Running with Docker
+# Installing With Docker
 
-- To forward an Nvidia GPU, you must have the Nvidia Container Toolkit installed: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
-- Open a shell terminal and `cd` to a directory you want to install into
-- Run shell commands:
-    - `git clone https://github.com/mcmonkeyprojects/SwarmUI`
-    - cd `SwarmUI`
-    - `./launch-docker.sh`
-    - Open your browser to `localhost:7801`
-- Note that it will forward the `Models` and `Output` directory, and will mount `Data` and `dlbackend` as independent persistent volumes.
+See [Docs/Docker.md](/docs/Docker.md) for detailed instructions on using SwarmUI in Docker.
 
 # Documentation
 
@@ -147,6 +143,7 @@ This project:
 - can automatically install [insightface](https://github.com/deepinsight/insightface) (MIT) for `IP Adapter - Face` support
 - uses [JSON.NET](https://github.com/JamesNK/Newtonsoft.Json) (MIT), [FreneticUtilities](https://github.com/FreneticLLC/FreneticUtilities) (MIT), [LiteDB](https://github.com/mbdavid/LiteDB) (MIT), [ImageSharp](https://github.com/SixLabors/ImageSharp/) (Apache2 under open-source Split License)
 - embeds copies of web assets from [BootStrap](https://getbootstrap.com/) (MIT), [Select2](https://select2.org/) (MIT), [JQuery](https://jquery.com/) (MIT), [exifr](https://github.com/MikeKovarik/exifr) (MIT).
+- contains some icons from [Cristian Munoz](https://www.figma.com/community/file/1311159026125960259/7000-free-ui-icons) (CC-BY-4.0), the font [inter by rsms](https://github.com/rsms/inter) (OFL), [Unifont by GNU](https://unifoundry.com/unifont/) (OFL), [Material Symbols Outlined by Google](https://fonts.google.com/icons) (Apache2).
 - can be used to install some custom node packs, which have individual license notices for any non-pure-FOSS licenses before install.
 - supports user-built extensions which may have their own licenses or legal conditions.
 
@@ -163,7 +160,7 @@ Copyright (c) 2024 Stability AI
 
 The MIT License (MIT)
 
-Copyright (c) 2024 Alex "mcmonkey" Goodwin
+Copyright (c) 2024-2025 Alex "mcmonkey" Goodwin
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

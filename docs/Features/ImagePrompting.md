@@ -1,4 +1,4 @@
-# SwarmUI Image Prompt - IP-Adapter and Revision
+# SwarmUI Image Prompting - IP-Adapter, Revision, Etc.
 
 - To use image-prompting features in Swarm, simply drag an image into the prompt box, or copy an image and while in the prompt box press CTRL+V to paste.
 - When you do this, the ReVision control panel will open on the left at the top of the parameters listing.
@@ -25,3 +25,9 @@
     - Whenever you select a model category you haven't tried before, Swarm will automatically download the model files for it.
         - Depending on your network speed, this may take a moment. Check the server logs to see a progress report of the download.
         - After being downloaded once, the models are stored in `(Swarm)/Models/ipadapter` (or wherever your models dir is), and won't need to be downloaded again.
+- You can use non-standard IPAdapter models by saving them to `(Swarm)/Models/ipadapter`. If they don't use CLIPVision G, you will need to select the correct vision model under `Advanced Model Addons` -> `ReVision Model`.
+
+# Style Models
+
+- Style models, such as Flux Redux, can be used through the same interface.
+    - See [the model support doc for Flux Redux specifics](/docs/Model%20Support.md#flux1-tools)

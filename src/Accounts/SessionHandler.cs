@@ -5,6 +5,7 @@ using LiteDB;
 using SwarmUI.Text2Image;
 using FreneticUtilities.FreneticToolkit;
 using FreneticUtilities.FreneticExtensions;
+using FreneticUtilities.FreneticDataSyntax;
 
 namespace SwarmUI.Accounts;
 
@@ -22,6 +23,12 @@ public class SessionHandler
 
     /// <summary>Temporary map of current users. Do not use this directly, use <see cref="GetUser(string)"/>.</summary>
     public ConcurrentDictionary<string, User> Users = new();
+
+    /// <summary>Map of user roles by ID.</summary>
+    public ConcurrentDictionary<string, Role> Roles = new();
+
+    /// <summary>Set of permission nodes that this server is familiar with. May expand upon updates, extension loads, etc.</summary>
+    public HashSet<string> TrackedPermissions = [];
 
     /// <summary>ID to use for the local user when in single-user mode.</summary>
     public static string LocalUserID = "local";
@@ -46,6 +53,69 @@ public class SessionHandler
 
     public User GenericSharedUser;
 
+    /// <summary>Saves persistent data to file.</summary>
+    public void Save()
+    {
+        lock (DBLock)
+        {
+            FDSSection roleSection = new();
+            foreach (Role role in Roles.Values)
+            {
+                roleSection.SetRoot(role.ID, role.Data.Save(true));
+            }
+            roleSection.SetRoot("___$tracked", TrackedPermissions);
+            roleSection.SaveToFile($"{Program.DataDir}/Roles.fds");
+        }
+    }
+
+    /// <summary>Keeps the default permission list applied.</summary>
+    public void ApplyDefaultPermissions()
+    {
+        bool any = false;
+        foreach (PermInfo perm in Permissions.Registered.Values)
+        {
+            if (!TrackedPermissions.Contains(perm.ID))
+            {
+                any = true;
+                TrackedPermissions.Add(perm.ID);
+                if (perm.Default == PermissionDefault.NOBODY)
+                {
+                    Roles["owner"].Data.PermissionFlags.Add(perm.ID);
+                }
+                else if (perm.Default == PermissionDefault.ADMINS)
+                {
+                    Roles["owner"].Data.PermissionFlags.Add(perm.ID);
+                    Roles["admin"].Data.PermissionFlags.Add(perm.ID);
+                }
+                else if (perm.Default == PermissionDefault.POWERUSERS)
+                {
+                    Roles["owner"].Data.PermissionFlags.Add(perm.ID);
+                    Roles["admin"].Data.PermissionFlags.Add(perm.ID);
+                    Roles["poweruser"].Data.PermissionFlags.Add(perm.ID);
+                }
+                else if (perm.Default == PermissionDefault.USER)
+                {
+                    Roles["owner"].Data.PermissionFlags.Add(perm.ID);
+                    Roles["admin"].Data.PermissionFlags.Add(perm.ID);
+                    Roles["poweruser"].Data.PermissionFlags.Add(perm.ID);
+                    Roles["user"].Data.PermissionFlags.Add(perm.ID);
+                }
+                else if (perm.Default == PermissionDefault.GUEST)
+                {
+                    Roles["owner"].Data.PermissionFlags.Add(perm.ID);
+                    Roles["admin"].Data.PermissionFlags.Add(perm.ID);
+                    Roles["poweruser"].Data.PermissionFlags.Add(perm.ID);
+                    Roles["user"].Data.PermissionFlags.Add(perm.ID);
+                    Roles["guest"].Data.PermissionFlags.Add(perm.ID);
+                }
+            }
+        }
+        if (any)
+        {
+            Save();
+        }
+    }
+
     /// <summary>Helper for the database to store generic datablobs.</summary>
     public class GenericDataStore
     {
@@ -55,6 +125,9 @@ public class SessionHandler
         public string Data { get; set; }
     }
 
+    public static int PatchOwnerMaxT2I = 32, PatchOwnerMaxDepth = 5;
+    public static bool PatchOwnerAllowUnsafe = false;
+
     public SessionHandler()
     {
         Database = new LiteDatabase($"{Program.DataDir}/Users.ldb");
@@ -62,6 +135,71 @@ public class SessionHandler
         SessionDatabase = Database.GetCollection<Session.DatabaseEntry>("sessions");
         T2IPresets = Database.GetCollection<T2IPreset>("t2i_presets");
         GenericData = Database.GetCollection<GenericDataStore>("generic_data");
+        FDSSection rolesData = new();
+        try
+        {
+            rolesData = FDSUtility.ReadFile($"{Program.DataDir}/Roles.fds");
+        }
+        catch (Exception) { }
+        foreach (string id in rolesData.GetRootKeys())
+        {
+            if (id.StartsWith("___$"))
+            {
+                continue;
+            }
+            FDSSection data = rolesData.GetSection(id);
+            if (data is null)
+            {
+                Logs.Error($"Failed to load role {id} from Roles.fds");
+                continue;
+            }
+            Roles[id] = new Role(id);
+            Roles[id].Data.Load(data);
+        }
+        TrackedPermissions = [.. (rolesData.GetRootData("___$tracked") ?? new(new List<FDSData>())).AsStringList];
+        if (!Roles.ContainsKey("owner"))
+        {
+            Role r = new("owner") { IsAutoGenerated = true };
+            Roles["owner"] = r;
+            r.Data.Name = "Owner";
+            r.Data.Description = "(Auto Generated Role, cannot delete). The owner of the server, local user when account system is disabled. Generally should have all permissions ever always.";
+            r.Data.MaxT2ISimultaneous = PatchOwnerMaxT2I;
+            r.Data.MaxOutPathDepth = PatchOwnerMaxDepth;
+            r.Data.AllowUnsafeOutpaths = PatchOwnerAllowUnsafe;
+        }
+        if (!Roles.ContainsKey("admin"))
+        {
+            Role r = new("admin") { IsAutoGenerated = true };
+            Roles["admin"] = r;
+            r.Data.Name = "Admin";
+            r.Data.Description = "(Auto Generated Role, cannot delete). An administrator of the server, has near-total control.";
+        }
+        if (!Roles.ContainsKey("poweruser"))
+        {
+            Role r = new("poweruser") { IsAutoGenerated = true };
+            Roles["poweruser"] = r;
+            r.Data.Name = "PowerUser";
+            r.Data.Description = "(Auto Generated Role, cannot delete). A very advanced, and trusted, user. Has access to things that could be dangerous or can be maliciously abused.";
+        }
+        if (!Roles.ContainsKey("user"))
+        {
+            Role r = new("user") { IsAutoGenerated = true };
+            Roles["user"] = r;
+            r.Data.Name = "User";
+            r.Data.Description = "(Auto Generated Role, cannot delete). A general user. The default role for valid accounts.";
+        }
+        if (!Roles.ContainsKey("guest"))
+        {
+            Role r = new("guest") { IsAutoGenerated = true };
+            Roles["guest"] = r;
+            r.Data.Name = "Guest";
+            r.Data.Description = "(Auto Generated Role, cannot delete). An unregistered or unverified guest account. Only when public unverified access is enabled.";
+        }
+        foreach (string roleId in new string[] { "guest", "user", "poweruser", "admin", "owner" })
+        {
+            Roles[roleId].IsAutoGenerated = true;
+        }
+        ApplyDefaultPermissions();
         GenericSharedUser = GetUser("__shared");
         Utilities.RunCheckedTask(async () =>
         {
@@ -93,7 +231,10 @@ public class SessionHandler
         }
         userId ??= LocalUserID;
         User user = GetUser(userId);
-        user.Restrictions.Admin = true;
+        if (!user.MayCreateSessions)
+        {
+            throw new SwarmReadableErrorException($"User '{user.UserID}' may not create new sessions currently.");
+        }
         Logs.Info($"Creating new admin session '{userId}' for {source}");
         for (int i = 0; i < 1000; i++)
         {
@@ -116,8 +257,24 @@ public class SessionHandler
         throw new SwarmReadableErrorException("Something is critically wrong in the session handler, cannot generate unique IDs!");
     }
 
+    /// <summary>Cancel, remove, and destroy a session entirely.</summary>
+    public void RemoveSession(Session session)
+    {
+        try
+        {
+            session.SessInterrupt.Cancel();
+        }
+        catch (Exception) { }
+        Sessions.TryRemove(session.ID, out _);
+        session.User.CurrentSessions.TryRemove(session.ID, out _);
+        lock (DBLock)
+        {
+            SessionDatabase.Delete(session.ID);
+        }
+    }
+
     /// <summary>Gets or creates the user for the given ID.</summary>
-    public User GetUser(string userId)
+    public User GetUser(string userId, bool makeNew = true)
     {
         userId = Utilities.StrictFilenameClean(userId).Replace("/", "");
         if (userId.Length == 0)
@@ -130,6 +287,15 @@ public class SessionHandler
         }
         lock (DBLock)
         {
+            if (!makeNew)
+            {
+                User.DatabaseEntry userData = UserDatabase.FindById(userId);
+                if (userData is null)
+                {
+                    return null;
+                }
+                return Users.GetOrAdd(userId, _ => new(this, userData));
+            }
             return Users.GetOrAdd(userId, _ => // Intentional GetOrAdd due to special locking requirements (DBLock)
             {
                 User.DatabaseEntry userData = UserDatabase.FindById(userId);
@@ -174,6 +340,24 @@ public class SessionHandler
         return false;
     }
 
+    /// <summary>Remove all data associated with a given user from the user databases. Does not remove output history or anything they did outside of their personal user data.</summary>
+    public void RemoveUser(User user)
+    {
+        lock (DBLock)
+        {
+            string prefix = $"{user.UserID}///";
+            user.MayCreateSessions = false;
+            foreach (Session userSess in user.CurrentSessions.Values.ToArray())
+            {
+                RemoveSession(userSess);
+            }
+            T2IPresets.DeleteMany(b => b.ID.StartsWith(prefix));
+            GenericData.DeleteMany(b => b.ID.StartsWith(prefix));
+            UserDatabase.Delete(user.UserID);
+            Users.TryRemove(user.UserID, out _);
+        }
+    }
+
     private volatile bool HasShutdown;
 
     /// <summary>Main shutdown handler, triggered by <see cref="Program.Shutdown"/>.</summary>
@@ -187,6 +371,7 @@ public class SessionHandler
         Logs.Info("Will shut down session handler...");
         lock (DBLock)
         {
+            Save();
             Sessions.Clear();
             Logs.Info("Will save user data.");
             Database.Dispose();

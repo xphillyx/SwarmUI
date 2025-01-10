@@ -163,7 +163,7 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
     }
 
     /// <summary>Names of folders in comfy paths that should be blindly forwarded to correct for Comfy not properly propagating base_path without manual forwards.</summary>
-    public static List<string> FoldersToForwardInComfyPath = ["unet", "diffusion_models", "gligen", "ipadapter", "yolov8", "tensorrt", "clipseg"];
+    public static List<string> FoldersToForwardInComfyPath = ["unet", "diffusion_models", "gligen", "ipadapter", "yolov8", "tensorrt", "clipseg", "style_models"];
 
     /// <summary>Filepaths to where custom node packs for comfy can be found, such as extension dirs.</summary>
     public static List<string> CustomNodePaths = [];
@@ -179,7 +179,7 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
                 return;
             }
             AddLoadStatus($"Will emit comfy model paths file...");
-            string[] roots = Program.ServerSettings.Paths.ActualModelRoot.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            string[] roots = Program.ServerSettings.Paths.ModelRoot.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             string yaml = "";
             int count = 0;
             static string buildSection(string root, string path)
@@ -207,28 +207,35 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
             }
             foreach (string root in roots)
             {
+                string rootFixed = Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, root);
                 int id = ++count;
                 yaml += $"""
                 swarmui{(id == 1 ? "" : $"{id}")}:
-                    base_path: {root}
-                    is_default: true
-                    checkpoints: {buildSection(root, Program.ServerSettings.Paths.SDModelFolder)}
-                    vae: {buildSection(root, Program.ServerSettings.Paths.SDVAEFolder + ";VAE")}
-                    loras: {buildSection(root, Program.ServerSettings.Paths.SDLoraFolder + ";Lora;LyCORIS")}
-                    upscale_models: {buildSection(root, "ESRGAN;RealESRGAN;SwinIR;upscale-models;upscale_models")}
-                    embeddings: {buildSection(root, Program.ServerSettings.Paths.SDEmbeddingFolder + ";embeddings")}
-                    hypernetworks: {buildSection(root, "hypernetworks")}
-                    controlnet: {buildSection(root, Program.ServerSettings.Paths.SDControlNetsFolder + ";ControlNet")}
-                    clip: {buildSection(root, Program.ServerSettings.Paths.SDClipFolder + ";clip;CLIP")}
-                    clip_vision: {buildSection(root, Program.ServerSettings.Paths.SDClipVisionFolder + ";clip_vision")}
-                    custom_nodes: {buildSection(root, $"{Path.GetFullPath(ComfyUIBackendExtension.Folder + "/DLNodes")};{Path.GetFullPath(ComfyUIBackendExtension.Folder + "/ExtraNodes")};{CustomNodePaths.Select(Path.GetFullPath).JoinString(";")}")}
+                    base_path: {rootFixed}
+                    {(id == 1 ? "is_default: true" : "")}
+                    checkpoints: {buildSection(rootFixed, Program.ServerSettings.Paths.SDModelFolder)}
+                    vae: {buildSection(rootFixed, Program.ServerSettings.Paths.SDVAEFolder + ";VAE")}
+                    loras: {buildSection(rootFixed, Program.ServerSettings.Paths.SDLoraFolder + ";Lora;LyCORIS")}
+                    upscale_models: {buildSection(rootFixed, "ESRGAN;RealESRGAN;SwinIR;upscale-models;upscale_models")}
+                    embeddings: {buildSection(rootFixed, Program.ServerSettings.Paths.SDEmbeddingFolder + ";embeddings")}
+                    hypernetworks: {buildSection(rootFixed, "hypernetworks")}
+                    controlnet: {buildSection(rootFixed, Program.ServerSettings.Paths.SDControlNetsFolder + ";ControlNet")}
+                    clip: {buildSection(rootFixed, Program.ServerSettings.Paths.SDClipFolder + ";clip;CLIP")}
+                    clip_vision: {buildSection(rootFixed, Program.ServerSettings.Paths.SDClipVisionFolder + ";clip_vision")}
 
                 """;
                 foreach (string folder in FoldersToForwardInComfyPath)
                 {
-                    yaml += $"    {folder}: {buildSection(root, folder)}\n";
+                    yaml += $"    {folder}: {buildSection(rootFixed, folder)}\n";
                 }
+                yaml += "\n";
             }
+            yaml += $"""
+            # Explicitly separate the _nodes list to prevent it from being is_default
+            swarmui_nodes:
+                custom_nodes: {buildSection(ComfyUIBackendExtension.Folder, $"{Path.GetFullPath(ComfyUIBackendExtension.Folder + "/DLNodes")};{Path.GetFullPath(ComfyUIBackendExtension.Folder + "/ExtraNodes")};{CustomNodePaths.Select(Path.GetFullPath).JoinString(";")}")}
+
+            """;
             Directory.CreateDirectory(Utilities.CombinePathWithAbsolute(roots[0], Program.ServerSettings.Paths.SDClipVisionFolder.Split(';')[0]));
             Directory.CreateDirectory(Utilities.CombinePathWithAbsolute(roots[0], Program.ServerSettings.Paths.SDClipFolder.Split(';')[0]));
             Directory.CreateDirectory($"{roots[0]}/upscale_models");
@@ -252,7 +259,6 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
         return Process.Start(start);
     }
 
-#pragma warning disable CS1998 // Async method lacks 'await' operators and will run synchronously
     public override async Task Init()
     {
         AddLoadStatus("Starting init...");
@@ -267,6 +273,10 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
                 pathRaw = $"\"{pathRaw}\"";
             }
             addedArgs += $" --extra-model-paths-config {pathRaw}";
+            if (Utilities.PresumeNVidia40xx && Program.ServerSettings.Performance.AllowGpuSpecificOptimizations)
+            {
+                addedArgs += " --fast";
+            }
             if (settings.EnablePreviews)
             {
                 addedArgs += " --preview-method latent2rgb";
@@ -277,7 +287,7 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
             }
             else if (settings.FrontendVersion == "LatestSwarmValidated")
             {
-                addedArgs += " --front-end-version Comfy-Org/ComfyUI_frontend@v1.2.47";
+                addedArgs += " --front-end-version Comfy-Org/ComfyUI_frontend@v1.6.17";
             }
             else if (settings.FrontendVersion == "Legacy")
             {
@@ -311,6 +321,14 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
                         // Backup because multiple users have wound up off master branch sometimes, aggressive should push back to master so it's repaired by next startup
                         string checkoutResponse = await Utilities.RunGitProcess("checkout master --force", path);
                         AddLoadStatus($"Comfy git checkout master response: {checkoutResponse.Trim()}");
+                        // Overly specific check, no idea how this happens
+                        if (response.Contains("There is no tracking information for the current branch") && checkoutResponse.Contains("Already on 'master'"))
+                        {
+                            string fixStatus = await Utilities.RunGitProcess("branch --set-upstream-to=origin/master master", path);
+                            AddLoadStatus($"Comfy git fix response: {fixStatus.Trim()}");
+                            string repullResponse = await Utilities.RunGitProcess("pull --autostash", path);
+                            AddLoadStatus($"Comfy git re-pull response: {repullResponse.Trim()}");
+                        }
                     }
                     if (response.Contains("error: Your local changes to the following files"))
                     {
@@ -331,7 +349,24 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
         if (lib is not null)
         {
             AddLoadStatus($"Will validate required libs...");
-            HashSet<string> libs = Directory.GetDirectories($"{lib}/site-packages/").Select(f => f.Replace('\\', '/').AfterLast('/').Before('-')).ToHashSet();
+            string[] dirs = [.. Directory.GetDirectories($"{lib}/site-packages/").Select(f => f.Replace('\\', '/').AfterLast('/'))];
+            HashSet<string> libs = dirs.Select(d => d.Before('-')).ToHashSet();
+            if (dirs.Contains("ultralytics-8.3.41.dist-info") || dirs.Contains("ultralytics-8.3.42.dist-info"))
+            {
+                AddLoadStatus($"DETECTED MALICIOUS PACKAGE, WILL REMOVE...");
+                Logs.Error($"!!! WARNING !!! Malicious Python Package (ultralytics 8.3.41, Crypto miner attack) detected!");
+                Process p = DoPythonCall($"-s -m pip uninstall ultralytics");
+                NetworkBackendUtils.ReportLogsFromProcess(p, $"ComfyUI (uninstall ultralytics)", "");
+                await p.WaitForExitAsync(Program.GlobalProgramCancel);
+                _ = Utilities.RunCheckedTask(async () =>
+                {
+                    for (int i = 0; i < 5; i++)
+                    {
+                        Logs.Error($"!!! WARNING !!! Malicious Python Package (ultralytics 8.3.41, Crypto miner attack) detected! It has been automatically uninstalled. See https://github.com/ultralytics/ultralytics/issues/18027 for details.");
+                        await Task.Delay(TimeSpan.FromSeconds(5));
+                    }
+                });
+            }
             async Task install(string libFolder, string pipName)
             {
                 if (libs.Contains(libFolder))
@@ -344,17 +379,10 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
                 await p.WaitForExitAsync(Program.GlobalProgramCancel);
                 AddLoadStatus($"Done installing '{pipName}' for ComfyUI.");
             }
-            // ComfyUI added these dependencies, didn't used to have it
-            await install("kornia", "kornia");
-            await install("sentencepiece", "sentencepiece");
-            await install("spandrel", "spandrel");
-            // Other added dependencies
-            await install("rembg", "rembg");
-            await install("matplotlib", "matplotlib==3.9"); // Old version due to "mesonpy" curse
-            await install("opencv_python_headless", "opencv-python-headless");
-            await install("imageio_ffmpeg", "imageio-ffmpeg");
-            await install("dill", "dill");
-            await install("ultralytics", "ultralytics==8.1.47"); // Old version due to "mesonpy" curse
+            foreach ((string libFolder, string pipName) in RequiredPythonPackages)
+            {
+                await install(libFolder, pipName);
+            }
             if (Directory.Exists($"{ComfyUIBackendExtension.Folder}/DLNodes/ComfyUI_IPAdapter_plus"))
             {
                 // FaceID IPAdapter models need these, really inconvenient to make dependencies conditional, so...
@@ -363,6 +391,10 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
                 {
                     // TODO: This is deeply cursed. This is published by the comfyui-ReActor-node developer so at least it's not a complete rando, but, jeesh. Insightface please fix your pip package.
                     await install("insightface", "https://github.com/Gourieff/Assets/raw/main/Insightface/insightface-0.7.3-cp311-cp311-win_amd64.whl");
+                }
+                else if (File.Exists($"{lib}/../python312.dll"))
+                {
+                    await install("insightface", "https://github.com/Gourieff/Assets/raw/main/Insightface/insightface-0.7.3-cp312-cp312-win_amd64.whl");
                 }
                 else
                 {
@@ -374,6 +406,23 @@ public class ComfyUISelfStartBackend : ComfyUIAPIAbstractBackend
         AddLoadStatus("Starting self-start ComfyUI process...");
         await NetworkBackendUtils.DoSelfStart(settings.StartScript, this, $"ComfyUI-{BackendData.ID}", $"backend-{BackendData.ID}", settings.GPU_ID, settings.ExtraArgs.Trim() + " --port {PORT}" + addedArgs, InitInternal, (p, r) => { Port = p; RunningProcess = r; }, settings.AutoRestart);
     }
+
+    /// <summary>List of known required python packages, as pairs of strings: Item1 is the folder name within python packages to look for, Item2 is the pip install command.</summary>
+    public static List<(string, string)> RequiredPythonPackages =
+    [
+        // ComfyUI added these dependencies, didn't used to have it
+        ("kornia", "kornia"),
+        ("sentencepiece", "sentencepiece"),
+        ("spandrel", "spandrel"),
+        // Other added dependencies
+        ("rembg", "rembg"),
+        ("onnxruntime", "onnxruntime"), // subdependency of rembg but inexplicably not autoinstalled anymore?
+        ("matplotlib", "matplotlib"),
+        ("opencv_python_headless", "opencv-python-headless"),
+        ("imageio_ffmpeg", "imageio-ffmpeg"),
+        ("dill", "dill"),
+        ("ultralytics", "ultralytics==8.1.47")
+    ];
 
     public override async Task Shutdown()
     {

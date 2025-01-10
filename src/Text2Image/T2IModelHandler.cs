@@ -140,6 +140,10 @@ public class T2IModelHandler
                     {
                         File.Delete($"{folder}/model_metadata.ldb");
                     }
+                    if (File.Exists($"{folder}/model_metadata-log.ldb"))
+                    {
+                        File.Delete($"{folder}/model_metadata-log.ldb");
+                    }
                 }
                 catch (Exception) { }
                 try
@@ -165,13 +169,11 @@ public class T2IModelHandler
         {
             return [];
         }
-        string allowedStr = session is null ? ".*" : session.User.Restrictions.AllowedModels;
-        if (allowedStr == ".*")
+        if (session is null || session.User.IsAllowedAllModels)
         {
             return [.. Models.Values];
         }
-        Regex allowed = new(allowedStr, RegexOptions.Compiled | RegexOptions.IgnoreCase);
-        return Models.Values.Where(m => allowed.IsMatch(m.Name)).ToList();
+        return Models.Values.Where(m => session.User.IsAllowedModel(m.Name)).ToList();
     }
 
     public List<string> ListModelNamesFor(Session session)
@@ -185,7 +187,7 @@ public class T2IModelHandler
 
     public T2IModel GetModel(string name)
     {
-        if (Models.TryGetValue(name, out T2IModel model))
+        if (Models.TryGetValue(name, out T2IModel model) || Models.TryGetValue(name + ".safetensors", out model))
         {
             return model;
         }
@@ -216,7 +218,12 @@ public class T2IModelHandler
             foreach (string path in FolderPaths)
             {
                 AddAllFromFolder(path, "");
-                Logs.Debug($"Have {Models.Count} {ModelType} models.");
+            }
+            Logs.Debug($"Have {Models.Count} {ModelType} models.");
+            T2IModel[] dupped = [.. Models.Values.Where(m => m.OtherPaths.Count > 0)];
+            if (dupped.Length > 0)
+            {
+                Logs.Debug($"There are {dupped.Length} {ModelType} models that have exactly matched filenames across different folders: '{dupped[0].RawFilePath}' is also stored in '{dupped[0].OtherPaths.JoinString("', '")}'");
             }
             if (UnathorizedAccessSet.Any())
             {
@@ -288,6 +295,8 @@ public class T2IModelHandler
     public static readonly string[] AutoImageFormatSuffixes = [".jpg", ".png", ".preview.png", ".preview.jpg", ".jpeg", ".preview.jpeg", ".thumb.jpg", ".thumb.png"];
 
     public static readonly string[] AltModelMetadataJsonFileSuffixes = [".swarm.json", ".json", ".cm-info.json", ".civitai.info"];
+
+    public static readonly string[] AllModelAttachedExtensions = [.. AutoImageFormatSuffixes.Concat(AltModelMetadataJsonFileSuffixes)];
 
     public static readonly string[] AltMetadataDescriptionKeys = ["VersionName", "VersionDescription", "ModelDescription", "description"];
 
@@ -604,11 +613,19 @@ public class T2IModelHandler
         });
         Parallel.ForEach(Directory.EnumerateFiles(actualFolder), file =>
         {
-            string fn = file.Replace('\\', '/').AfterLast('/');
+            string fixedFileName = file.Replace('\\', '/');
+            string fn = fixedFileName.AfterLast('/');
             string fullFilename = $"{prefix}{fn}";
-            if (T2IModel.NativelySupportedModelExtensions.Contains(fn.AfterLast('.')))
+            if (Models.TryGetValue(fullFilename, out T2IModel existingModel))
             {
-                T2IModel model = new(this, pathBase, file, fullFilename)
+                lock (existingModel.OtherPaths)
+                {
+                    existingModel.OtherPaths.Add(fixedFileName);
+                }
+            }
+            else if (T2IModel.NativelySupportedModelExtensions.Contains(fn.AfterLast('.')))
+            {
+                T2IModel model = new(this, pathBase, fixedFileName, fullFilename)
                 {
                     Title = fullFilename.AfterLast('/'),
                     Description = "(Metadata not yet loaded.)",
@@ -635,7 +652,7 @@ public class T2IModelHandler
             }
             else if (T2IModel.LegacyModelExtensions.Contains(fn.AfterLast('.')))
             {
-                T2IModel model = new(this, pathBase, file, fullFilename)
+                T2IModel model = new(this, pathBase, fixedFileName, fullFilename)
                 {
                     Description = "(None, use '.safetensors' to enable metadata descriptions)",
                     PreviewImage = "imgs/legacy_ckpt.jpg",

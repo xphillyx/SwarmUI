@@ -79,12 +79,12 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
         if (firstBackSlash is not null)
         {
             ModelFolderFormat = "\\";
-            Logs.Debug($"Comfy backend {BackendData.ID} using model folder format: backslash \\ due to model {firstBackSlash}");
+            Logs.Verbose($"Comfy backend {BackendData.ID} using model folder format: backslash \\ due to model {firstBackSlash}");
         }
         else
         {
             ModelFolderFormat = "/";
-            Logs.Debug($"Comfy backend {BackendData.ID} using model folder format: forward slash / as no backslash was found");
+            Logs.Verbose($"Comfy backend {BackendData.ID} using model folder format: forward slash / as no backslash was found");
         }
         try
         {
@@ -104,6 +104,10 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
 
     public NetworkBackendUtils.IdleMonitor Idler = new();
 
+    public bool HasEverShownInternalError = false;
+
+    public int TimesErrorIgnored = 0;
+
     public async Task InitInternal(bool ignoreWebError)
     {
         MaxUsages = 1 + OverQueue;
@@ -120,13 +124,24 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             Status = BackendStatus.RUNNING;
             LoadStatusReport = null;
         }
-        catch (Exception e)
+        catch (HttpRequestException e)
         {
             if (!ignoreWebError)
             {
                 throw;
             }
             Logs.Verbose($"Comfy backend {BackendData.ID} failed to load value set, but ignoring error: {e.GetType().Name}: {e.Message}");
+            TimesErrorIgnored++;
+            if (!HasEverShownInternalError && TimesErrorIgnored == 15)
+            {
+                HasEverShownInternalError = true;
+                Logs.Debug($"Comfy backend {BackendData.ID} has failed to load value set repeatedly. Ignoring errors of {e.GetType().Name}: {e.Message}");
+            }
+            if (!HasEverShownInternalError && TimesErrorIgnored > 40)
+            {
+                HasEverShownInternalError = true;
+                Logs.Warning($"Comfy backend {BackendData.ID} has failed to load value set repeatedly. Is it stuck loading very slowly, or has it internally failed? Ignoring errors of {e.GetType().Name}: {e.Message}");
+            }
         }
         Idler.Stop();
         Program.GlobalProgramCancel.ThrowIfCancellationRequested();
@@ -182,12 +197,12 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
         Logs.Verbose("Will await a job, do parse...");
         JObject workflowJson = Utilities.ParseToJson(workflow);
         Logs.Verbose("JSON parsed.");
-        JObject metadataObj = user_input.GenMetadataObject();
+        JObject metadataObj = user_input.GenParameterMetadata();
         metadataObj.Remove("donotsave");
         metadataObj.Remove("exactbackendid");
         metadataObj["is_preview"] = true;
         metadataObj["preview_notice"] = "Image is not done generating";
-        string previewMetadata = T2IParamInput.MetadataToString(metadataObj);
+        string previewMetadata = T2IParamInput.MetadataToString(new JObject() { ["sui_image_params"] = metadataObj });
         int expectedNodes = workflowJson.Count;
         string id = null;
         ClientWebSocket socket = null;
@@ -474,7 +489,17 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
             {
                 if (msg[0].ToString() == "execution_error" && (msg[1] as JObject).TryGetValue("exception_message", out JToken actualMessage))
                 {
-                    throw new SwarmReadableErrorException($"ComfyUI execution error: {actualMessage}");
+                    string note = "";
+                    string cleanCheckMessage = $"{actualMessage}".ToLowerFast().Replace('\\', '/').Trim();
+                    while (cleanCheckMessage.Contains("//"))
+                    {
+                        cleanCheckMessage = cleanCheckMessage.Replace("//", "/");
+                    }
+                    if (cleanCheckMessage.StartsWith("[errno 2] no such file or directory") && cleanCheckMessage.After(':').Trim().Length > 250)
+                    {
+                        note = $"\n\n-- This looks like a Windows path length error (with a path of length {cleanCheckMessage.After(':').Trim().Length}). If it is, see https://superuser.com/questions/1807770/how-to-enable-long-paths-on-windows-11-home for info on how to enable Long Paths in Windows to fix this bug.";
+                    }
+                    throw new SwarmReadableErrorException($"ComfyUI execution error: {actualMessage}{note}");
                 }
             }
         }
@@ -613,7 +638,8 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
                     }
                     if (type.Type == T2IParamDataType.INTEGER && type.ViewType == ParamViewType.SEED && long.Parse(val.ToString()) == -1)
                     {
-                        return $"{Random.Shared.Next()}";
+                        int max = (int)type.Max;
+                        return $"{Random.Shared.Next(0, max <= 0 ? int.MaxValue : max)}";
                     }
                     if (val is T2IModel model)
                     {
@@ -789,7 +815,7 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
     }
 
     /// <inheritdoc/>
-    public override async Task<bool> LoadModel(T2IModel model)
+    public override async Task<bool> LoadModel(T2IModel model, T2IParamInput upstreamInput)
     {
         T2IParamInput input = new(null);
         input.Set(T2IParamTypes.Model, model);
@@ -809,6 +835,20 @@ public abstract class ComfyUIAPIAbstractBackend : AbstractT2IBackend
         input.Set(T2IParamTypes.Images, 1);
         input.Set(T2IParamTypes.CFGScale, 7);
         input.Set(T2IParamTypes.Seed, 1);
+        if (upstreamInput is not null)
+        {
+            void copyParam<T>(T2IRegisteredParam<T> param)
+            {
+                if (upstreamInput.TryGet(param, out T val))
+                {
+                    input.Set(param, val);
+                }
+            }
+            copyParam(T2IParamTypes.VAE);
+            copyParam(T2IParamTypes.ClipGModel);
+            copyParam(T2IParamTypes.ClipLModel);
+            copyParam(T2IParamTypes.T5XXLModel);
+        }
         WorkflowGenerator wg = new() { UserInput = input, ModelFolderFormat = ModelFolderFormat, Features = [.. SupportedFeatures] };
         JObject workflow = wg.Generate();
         await AwaitJobLive(workflow.ToString(), "0", _ => { }, new(null), Program.GlobalProgramCancel);

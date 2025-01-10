@@ -2,17 +2,18 @@
 
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
-    <Version>0.9.3.1</Version>
+    <Version>0.9.4.1</Version>
     <NoWarn>CS1998</NoWarn>
     <InvariantGlobalization>true</InvariantGlobalization>
     <AssemblyName>SwarmUI</AssemblyName>
     <Title>SwarmUI</Title>
     <Product>SwarmUI</Product>
     <Authors>Alex "mcmonkey" Goodwin</Authors>
-    <Copyright>Copyright (c) 2024 Alex "mcmonkey" Goodwin</Copyright>
+    <Copyright>Copyright (c) 2024-2025 Alex "mcmonkey" Goodwin</Copyright>
     <Description>SwarmUI, an AI Image Generation User-Interface</Description>
     <OutputType>exe</OutputType>
     <ApplicationIcon>wwwroot/favicon.ico</ApplicationIcon>
+    <RollForward>Major</RollForward>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,7 +21,7 @@
     <PackageReference Include="Hardware.Info" Version="101.0.0" />
     <PackageReference Include="LiteDB" Version="5.0.21" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.5" />
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.6" />
     <PackageReference Include="SixLabors.ImageSharp.Drawing" Version="2.1.4" />
   </ItemGroup>
 

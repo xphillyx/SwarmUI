@@ -38,6 +38,32 @@ public static class ImageMetadataTracker
 
     public record class ImageDatabase(string Folder, LockObject Lock, LiteDatabase Database, ILiteCollection<ImageMetadataEntry> Metadata, ILiteCollection<ImagePreviewEntry> Previews)
     {
+        public volatile int Errors = 0;
+
+        public void HadNewError()
+        {
+            int newCount = Interlocked.Increment(ref Errors);
+            if (newCount < 10)
+            {
+                return;
+            }
+            lock (Lock)
+            {
+                try
+                {
+                    Database.Dispose();
+                    Errors = -1000;
+                }
+                catch (Exception) { }
+                try
+                {
+                    File.Delete($"{Folder}/image_metadata.ldb");
+                }
+                catch (Exception) { }
+                Databases.TryRemove(Folder, out _);
+            }
+        }
+
         public void Dispose()
         {
             try
@@ -80,7 +106,10 @@ public static class ImageMetadataTracker
     }
 
     /// <summary>File format extensions that even can have metadata on them.</summary>
-    public static HashSet<string> ExtensionsWithMetadata = ["png", "jpg", "webp"];
+    public static HashSet<string> ExtensionsWithMetadata = ["png", "jpg"];
+
+    /// <summary>File format extensions that require ffmpeg to process image data.</summary>
+    public static HashSet<string> ExtensionsForFfmpegables = ["webm", "mp4", "mov"];
 
     /// <summary>Deletes any tracked metadata for the given filepath.</summary>
     public static void RemoveMetadataFor(string file)
@@ -103,10 +132,6 @@ public static class ImageMetadataTracker
     public static byte[] GetOrCreatePreviewFor(string file)
     {
         string ext = file.AfterLast('.');
-        if (!ExtensionsWithMetadata.Contains(ext))
-        {
-            return null;
-        }
         string folder = file.BeforeAndAfterLast('/', out string filename);
         if (!Program.ServerSettings.Metadata.ImageMetadataPerFolder)
         {
@@ -153,20 +178,45 @@ public static class ImageMetadataTracker
         catch (Exception ex)
         {
             Console.WriteLine($"Error reading image metadata for file '{file}' from database: {ex.ReadableString()}");
+            metadata.HadNewError();
         }
         if (!File.Exists(file))
         {
             return null;
         }
         long fileTime = ((DateTimeOffset)File.GetLastWriteTimeUtc(file)).ToUnixTimeSeconds();
+        byte[] fileData;
         try
         {
-            byte[] data = File.ReadAllBytes(file);
+            string altPreview = $"{file.BeforeLast('.')}.swarmpreview.webp";
+            bool altExists = false;
+            if (ExtensionsForFfmpegables.Contains(ext))
+            {
+                altExists = Program.ServerSettings.UI.AllowAnimatedPreviews && File.Exists(altPreview);
+                if (!altExists)
+                {
+                    altPreview = $"{file.BeforeLast('.')}.swarmpreview.jpg";
+                    altExists = File.Exists(altPreview);
+                }
+            }
+            if ((ExtensionsForFfmpegables.Contains(ext) || !ExtensionsWithMetadata.Contains(ext)) && !altExists)
+            {
+                return null;
+            }
+            byte[] data = File.ReadAllBytes(altExists ? altPreview : file);
             if (data.Length == 0)
             {
                 return null;
             }
-            byte[] fileData = new Image(data, Image.ImageType.IMAGE, ext).ToMetadataJpg().ImageData;
+            fileData = altExists && altPreview.EndsWith(".webp") ? data : new Image(data, Image.ImageType.IMAGE, ext).ToMetadataJpg().ImageData;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error reading image preview for file '{file}': {ex.ReadableString()}");
+            return null;
+        }
+        try
+        {
             ImagePreviewEntry entry = new() { FileName = filename, PreviewData = fileData, LastVerified = timeNow, FileTime = fileTime };
             lock (metadata.Lock)
             {
@@ -176,7 +226,8 @@ public static class ImageMetadataTracker
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error reading image preview for file '{file}': {ex.ReadableString()}");
+            Console.WriteLine($"Error saving image preview for file '{file}' to database: {ex.ReadableString()}");
+            metadata.HadNewError();
             return null;
         }
     }
@@ -231,6 +282,7 @@ public static class ImageMetadataTracker
         catch (Exception ex)
         {
             Console.WriteLine($"Error reading image metadata for file '{file}' from database: {ex.ReadableString()}");
+            metadata.HadNewError();
         }
         if (!File.Exists(file))
         {
@@ -240,6 +292,7 @@ public static class ImageMetadataTracker
         string fileData = null;
         try
         {
+            string altMetaPath = $"{file.BeforeLast('.')}.swarm.json";
             if (ExtensionsWithMetadata.Contains(ext))
             {
                 byte[] data = File.ReadAllBytes(file);
@@ -248,6 +301,10 @@ public static class ImageMetadataTracker
                     return null;
                 }
                 fileData = new Image(data, Image.ImageType.IMAGE, ext).GetMetadata();
+            }
+            else if (File.Exists(altMetaPath))
+            {
+                fileData = File.ReadAllText(altMetaPath);
             }
             string subPath = file.StartsWith(root) ? file[root.Length..] : Path.GetRelativePath(root, file);
             subPath = subPath.Replace('\\', '/').Trim('/');
@@ -288,6 +345,7 @@ public static class ImageMetadataTracker
         catch (Exception ex)
         {
             Console.WriteLine($"Error writing image metadata for file '{file}' to database: {ex.ReadableString()}");
+            metadata.HadNewError();
         }
         return entry;
     }
@@ -309,29 +367,33 @@ public static class ImageMetadataTracker
     public static void MassRemoveMetadata()
     {
         KeyValuePair<string, ImageDatabase>[] dbs = [.. Databases];
+        static void remove(string name)
+        {
+            try
+            {
+                if (File.Exists($"{name}/image_metadata.ldb"))
+                {
+                    File.Delete($"{name}/image_metadata.ldb");
+                }
+                if (File.Exists($"{name}/image_metadata-log.ldb"))
+                {
+                    File.Delete($"{name}/image_metadata-log.ldb");
+                }
+            }
+            catch (IOException) { }
+        }
         foreach ((string name, ImageDatabase db) in dbs)
         {
             lock (db.Lock)
             {
                 db.Dispose();
-                try
-                {
-                    File.Delete($"{name}/image_metadata.ldb");
-                }
-                catch (IOException) { }
+                remove(name);
                 Databases.TryRemove(name, out _);
             }
         }
         static void ClearFolder(string folder)
         {
-            if (File.Exists($"{folder}/image_metadata.ldb"))
-            {
-                try
-                {
-                    File.Delete($"{folder}/image_metadata.ldb");
-                }
-                catch (IOException) { }
-            }
+            remove(folder);
             foreach (string subFolder in Directory.GetDirectories(folder))
             {
                 ClearFolder(subFolder);

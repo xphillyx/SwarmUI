@@ -6,6 +6,7 @@ API routes related to handling models (including loras, wildcards, etc).
 
 #### Table of Contents:
 
+- HTTP Route [DeleteModel](#http-route-apideletemodel)
 - HTTP Route [DeleteWildcard](#http-route-apideletewildcard)
 - HTTP Route [DescribeModel](#http-route-apidescribemodel)
 - WebSocket Route [DoModelDownloadWS](#websocket-route-apidomodeldownloadws)
@@ -15,15 +16,43 @@ API routes related to handling models (including loras, wildcards, etc).
 - HTTP Route [GetModelHash](#http-route-apigetmodelhash)
 - HTTP Route [ListLoadedModels](#http-route-apilistloadedmodels)
 - HTTP Route [ListModels](#http-route-apilistmodels)
+- HTTP Route [RenameModel](#http-route-apirenamemodel)
 - HTTP Route [SelectModel](#http-route-apiselectmodel)
 - WebSocket Route [SelectModelWS](#websocket-route-apiselectmodelws)
 - HTTP Route [TestPromptFill](#http-route-apitestpromptfill)
+
+## HTTP Route /API/DeleteModel
+
+#### Description
+
+Delete a model from storage.
+
+#### Permission Flag
+
+`delete_models` - `Delete Models` in group `Control`
+
+#### Parameters
+
+| Name | Type | Description | Default |
+| --- | --- | --- | --- |
+| modelName | String | Full filepath name of the model being deleted. | **(REQUIRED)** |
+| subtype | String | What model sub-type to use, can be eg `LoRA` or `Stable-Diffusion` or etc. | `Stable-Diffusion` |
+
+#### Return Format
+
+```js
+"success": "true"
+```
 
 ## HTTP Route /API/DeleteWildcard
 
 #### Description
 
 Deletes a wildcard file.
+
+#### Permission Flag
+
+`edit_wildcards` - `Edit Wildcards` in group `Control`
 
 #### Parameters
 
@@ -42,6 +71,10 @@ Deletes a wildcard file.
 #### Description
 
 Returns a full description for a single model.
+
+#### Permission Flag
+
+`fundamental_model_access` - `Fundamental Model Access` in group `User`
 
 #### Parameters
 
@@ -85,6 +118,10 @@ Returns a full description for a single model.
 Downloads a model to the server, with websocket progress updates.
 Note that this does not trigger a model refresh itself, you must do that after a 'success' reply.
 
+#### Permission Flag
+
+`download_models` - `Download Models` in group `Control`
+
 #### Parameters
 
 | Name | Type | Description | Default |
@@ -105,6 +142,10 @@ Note that this does not trigger a model refresh itself, you must do that after a
 #### Description
 
 Modifies the metadata of a model. Returns before the file update is necessarily saved.
+
+#### Permission Flag
+
+`edit_model_metadata` - `Edit Model Metadata` in group `Control`
 
 #### Parameters
 
@@ -140,6 +181,10 @@ Modifies the metadata of a model. Returns before the file update is necessarily 
 
 Edits a wildcard file.
 
+#### Permission Flag
+
+`edit_wildcards` - `Edit Wildcards` in group `Control`
+
 #### Parameters
 
 | Name | Type | Description | Default |
@@ -161,6 +206,10 @@ Edits a wildcard file.
 
 Forwards a metadata request, eg to civitai API.
 
+#### Permission Flag
+
+`edit_model_metadata` - `Edit Model Metadata` in group `Control`
+
 #### Parameters
 
 | Name | Type | Description | Default |
@@ -178,6 +227,10 @@ Forwards a metadata request, eg to civitai API.
 #### Description
 
 Gets or creates a valid tensor hash for the requested model.
+
+#### Permission Flag
+
+`edit_model_metadata` - `Edit Model Metadata` in group `Control`
 
 #### Parameters
 
@@ -197,6 +250,10 @@ Gets or creates a valid tensor hash for the requested model.
 #### Description
 
 Returns a list of currently loaded Stable-Diffusion models (ie at least one backend has it loaded).
+
+#### Permission Flag
+
+`fundamental_model_access` - `Fundamental Model Access` in group `User`
 
 #### Parameters
 
@@ -219,6 +276,10 @@ Returns a list of currently loaded Stable-Diffusion models (ie at least one back
 #### Description
 
 Returns a list of models available on the server within a given folder, with their metadata.
+
+#### Permission Flag
+
+`fundamental_model_access` - `Fundamental Model Access` in group `User`
 
 #### Parameters
 
@@ -244,11 +305,39 @@ Returns a list of models available on the server within a given folder, with the
     ]
 ```
 
+## HTTP Route /API/RenameModel
+
+#### Description
+
+Delete a model from storage.
+
+#### Permission Flag
+
+`delete_models` - `Delete Models` in group `Control`
+
+#### Parameters
+
+| Name | Type | Description | Default |
+| --- | --- | --- | --- |
+| oldName | String | Full filepath name of the model being renamed. | **(REQUIRED)** |
+| newName | String | New full filepath name for the model. | **(REQUIRED)** |
+| subtype | String | What model sub-type to use, can be eg `LoRA` or `Stable-Diffusion` or etc. | `Stable-Diffusion` |
+
+#### Return Format
+
+```js
+"success": "true"
+```
+
 ## HTTP Route /API/SelectModel
 
 #### Description
 
 Forcibly loads a model immediately on some or all backends.
+
+#### Permission Flag
+
+`load_models_now` - `Load Models Now` in group `Control`
 
 #### Parameters
 
@@ -269,6 +358,10 @@ Forcibly loads a model immediately on some or all backends.
 
 Forcibly loads a model immediately on some or all backends, with live status updates over websocket.
 
+#### Permission Flag
+
+`load_models_now` - `Load Models Now` in group `Control`
+
 #### Parameters
 
 | Name | Type | Description | Default |
@@ -286,6 +379,10 @@ Forcibly loads a model immediately on some or all backends, with live status upd
 #### Description
 
 Tests how a prompt fills. Useful for testing wildcards, `<random:...`, etc.
+
+#### Permission Flag
+
+`fundamental_model_access` - `Fundamental Model Access` in group `User`
 
 #### Parameters
 

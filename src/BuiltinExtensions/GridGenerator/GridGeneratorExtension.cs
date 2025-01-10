@@ -24,6 +24,10 @@ public class GridGeneratorExtension : Extension
 {
     public static T2IRegisteredParam<string> PromptReplaceParameter, PresetsParameter;
 
+    public static PermInfo PermGenerateGrids = Permissions.Register(new("gridgen_generate_grids", "[Grid Generator] Generate Grids", "Allows the user to generate grids with the Grid Generator tool.", PermissionDefault.USER, Permissions.GroupUser));
+    public static PermInfo PermReadGrids = Permissions.Register(new("gridgen_read_grids", "[Grid Generator] Read Grids", "Allows the user to read their list of saved grids.", PermissionDefault.USER, Permissions.GroupUser));
+    public static PermInfo PermSaveGrids = Permissions.Register(new("gridgen_save_grids", "[Grid Generator] Save Grids", "Allows the user to save new custom grids to their list of saved grids.", PermissionDefault.USER, Permissions.GroupUser));
+
     public override void OnPreInit()
     {
         ScriptFiles.Add("Assets/grid_gen.js");
@@ -187,7 +191,7 @@ public class GridGeneratorExtension : Extension
                         {
                             data.AddOutput(new JObject() { ["image"] = output, ["metadata"] = metadata });
                         }
-                        WebhookManager.SendEveryGenWebhook(thisParams, output);
+                        WebhookManager.SendEveryGenWebhook(thisParams, output, image.Img);
                     }
                     else
                     {
@@ -201,7 +205,7 @@ public class GridGeneratorExtension : Extension
                         {
                             data.AddOutput(new JObject() { ["image"] = url, ["batch_index"] = $"{iteration}", ["metadata"] = string.IsNullOrWhiteSpace(metadata) ? null : metadata });
                         }
-                        WebhookManager.SendEveryGenWebhook(thisParams, url);
+                        WebhookManager.SendEveryGenWebhook(thisParams, url, image.Img);
                         if (set.Grid.OutputType == Grid.OutputyTypeEnum.GRID_IMAGE)
                         {
                             data.GeneratedOutputs.TryAdd(set.BaseFilepath, image.Img);
@@ -235,12 +239,12 @@ public class GridGeneratorExtension : Extension
 
     public override void OnInit()
     {
-        API.RegisterAPICall(GridGenRun);
-        API.RegisterAPICall(GridGenDoesExist);
-        API.RegisterAPICall(GridGenSaveData);
-        API.RegisterAPICall(GridGenDeleteData);
-        API.RegisterAPICall(GridGenGetData);
-        API.RegisterAPICall(GridGenListData);
+        API.RegisterAPICall(GridGenRun, true, PermGenerateGrids);
+        API.RegisterAPICall(GridGenDoesExist, false, PermReadGrids);
+        API.RegisterAPICall(GridGenSaveData, true, PermSaveGrids);
+        API.RegisterAPICall(GridGenDeleteData, true, PermSaveGrids);
+        API.RegisterAPICall(GridGenGetData, false, PermReadGrids);
+        API.RegisterAPICall(GridGenListData, false, PermReadGrids);
     }
 
     public async Task<JObject> GridGenSaveData(Session session, string gridName, bool isPublic, JObject rawData)
@@ -281,13 +285,17 @@ public class GridGeneratorExtension : Extension
         string[] history = LoadableHistoryList.GetOrCreate(session.User.UserID, () =>
         {
             List<string> results = [];
-            foreach (string dir in Directory.EnumerateDirectories($"{session.User.OutputDirectory}/Grids/"))
+            try
             {
-                if (File.Exists($"{dir}/swarm_save_config.json"))
+                foreach (string dir in Directory.EnumerateDirectories($"{session.User.OutputDirectory}/Grids/").OrderByDescending(Directory.GetCreationTimeUtc))
                 {
-                    results.Add(dir.Replace('\\', '/').Trim('/').AfterLast('/'));
+                    if (File.Exists($"{dir}/swarm_save_config.json"))
+                    {
+                        results.Add(dir.Replace('\\', '/').Trim('/').AfterLast('/'));
+                    }
                 }
             }
+            catch (Exception) { }
             return [.. results];
         });
         return new JObject() { ["data"] = JArray.FromObject(data.ToArray()), ["history"] = JArray.FromObject(history) };
@@ -416,7 +424,7 @@ public class GridGeneratorExtension : Extension
         {
             Session = session,
             Claim = claim,
-            MaxSimul = session.User.Restrictions.CalcMaxT2ISimultaneous,
+            MaxSimul = session.User.CalcMaxT2ISimultaneous,
             ContinueOnError = continueOnError,
             ShowOutputs = showOutputs,
             SaveConfig = raw.TryGetValue("saveConfig", out JToken saveConfig) ? saveConfig as JObject : null

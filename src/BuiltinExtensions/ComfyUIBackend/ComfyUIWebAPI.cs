@@ -16,19 +16,19 @@ public static class ComfyUIWebAPI
 {
     public static void Register()
     {
-        API.RegisterAPICall(ComfySaveWorkflow, true);
-        API.RegisterAPICall(ComfyReadWorkflow);
-        API.RegisterAPICall(ComfyListWorkflows);
-        API.RegisterAPICall(ComfyDeleteWorkflow, true);
-        API.RegisterAPICall(ComfyGetGeneratedWorkflow);
-        API.RegisterAPICall(DoLoraExtractionWS, true);
-        API.RegisterAPICall(ComfyEnsureRefreshable);
-        API.RegisterAPICall(ComfyInstallFeatures, true);
-        API.RegisterAPICall(DoTensorRTCreateWS, true);
+        API.RegisterAPICall(ComfySaveWorkflow, true, ComfyUIBackendExtension.PermEditWorkflows);
+        API.RegisterAPICall(ComfyReadWorkflow, false, ComfyUIBackendExtension.PermReadWorkflows);
+        API.RegisterAPICall(ComfyListWorkflows, false, ComfyUIBackendExtension.PermReadWorkflows);
+        API.RegisterAPICall(ComfyDeleteWorkflow, true, ComfyUIBackendExtension.PermEditWorkflows);
+        API.RegisterAPICall(ComfyGetGeneratedWorkflow, false, ComfyUIBackendExtension.PermDirectCalls);
+        API.RegisterAPICall(DoLoraExtractionWS, true, Permissions.ExtractLoRAs);
+        API.RegisterAPICall(ComfyEnsureRefreshable, false, ComfyUIBackendExtension.PermDirectCalls);
+        API.RegisterAPICall(ComfyInstallFeatures, true, Permissions.InstallFeatures);
+        API.RegisterAPICall(DoTensorRTCreateWS, true, Permissions.CreateTRT);
     }
 
     /// <summary>API route to save a comfy workflow object to persistent file.</summary>
-    public static async Task<JObject> ComfySaveWorkflow(string name, string workflow, string prompt, string custom_params, string param_values, string image, string description = "", bool enable_in_simple = false, string replace = null)
+    public static async Task<JObject> ComfySaveWorkflow(Session session, string name, string workflow, string prompt, string custom_params, string param_values, string image, string description = "", bool enable_in_simple = false, string replace = null)
     {
         string origPath = Utilities.StrictFilenameClean(string.IsNullOrWhiteSpace(replace) ? name : replace);
         string cleaned = Utilities.StrictFilenameClean(name);
@@ -49,7 +49,7 @@ public static class ComfyUIWebAPI
         }
         if (!string.IsNullOrWhiteSpace(replace))
         {
-            await ComfyDeleteWorkflow(replace);
+            await ComfyDeleteWorkflow(session, replace);
         }
         ComfyUIBackendExtension.CustomWorkflows[cleaned] = new ComfyUIBackendExtension.ComfyCustomWorkflow(cleaned, workflow, prompt, custom_params, param_values, image, description, enable_in_simple);
         JObject data = new()
@@ -87,7 +87,7 @@ public static class ComfyUIWebAPI
     }
 
     /// <summary>API route to read a comfy workflow object from persistent file.</summary>
-    public static async Task<JObject> ComfyReadWorkflow(string name)
+    public static async Task<JObject> ComfyReadWorkflow(Session session, string name)
     {
         JObject val = ReadCustomWorkflow(name);
         if (val.ContainsKey("error"))
@@ -98,7 +98,7 @@ public static class ComfyUIWebAPI
     }
 
     /// <summary>API route to read a list of available Comfy custom workflows.</summary>
-    public static async Task<JObject> ComfyListWorkflows()
+    public static async Task<JObject> ComfyListWorkflows(Session session)
     {
         return new JObject() { ["workflows"] = JToken.FromObject(ComfyUIBackendExtension.CustomWorkflows.Keys.ToList()
             .Select(ComfyUIBackendExtension.GetWorkflowByName).OrderBy(w => w.Name).Select(w => new JObject()
@@ -111,7 +111,7 @@ public static class ComfyUIWebAPI
     }
 
     /// <summary>API route to read a delete a saved Comfy custom workflows.</summary>
-    public static async Task<JObject> ComfyDeleteWorkflow(string name)
+    public static async Task<JObject> ComfyDeleteWorkflow(Session session, string name)
     {
         string path = Utilities.StrictFilenameClean(name);
         if (!ComfyUIBackendExtension.CustomWorkflows.Remove(path, out _))
@@ -372,7 +372,7 @@ public static class ComfyUIWebAPI
                 a(new() { ["error"] = "Process completed but TensorRT model did not save. Something went wrong?" });
                 return;
             }
-            string outPathRaw = $"{Program.ServerSettings.Paths.ModelRoot}/tensorrt/{modelData.Name}_TensorRT";
+            string outPathRaw = $"{Program.ServerSettings.Paths.ActualModelRoot}/tensorrt/{modelData.Name}_TensorRT";
             string outPath = outPathRaw;
             int id = 0;
             while (File.Exists($"{outPath}.engine"))
@@ -434,39 +434,68 @@ public static class ComfyUIWebAPI
         {
             metadata["modelspec.thumbnail"] = otherModelData.Metadata.PreviewImage;
         }
-        JObject workflow = new()
+        JObject workflow = [];
+        if (baseModelData.IsDiffusionModelsFormat)
         {
-            ["4"] = new JObject()
+            workflow["4"] = new JObject()
+            {
+                ["class_type"] = "UNETLoader",
+                ["inputs"] = new JObject()
+                {
+                    ["unet_name"] = baseModelData.ToString(format),
+                    ["weight_dtype"] = "fp8_e4m3fn"
+                }
+            };
+        }
+        else
+        {
+            workflow["4"] = new JObject()
             {
                 ["class_type"] = "CheckpointLoaderSimple",
                 ["inputs"] = new JObject()
                 {
                     ["ckpt_name"] = baseModelData.ToString(format)
                 }
-            },
-            ["5"] = new JObject()
+            };
+        }
+        if (otherModelData.IsDiffusionModelsFormat)
+        {
+            workflow["5"] = new JObject()
+            {
+                ["class_type"] = "UNETLoader",
+                ["inputs"] = new JObject()
+                {
+                    ["unet_name"] = otherModelData.ToString(format),
+                    ["weight_dtype"] = "fp8_e4m3fn"
+                }
+            };
+        }
+        else
+        {
+            workflow["5"] = new JObject()
             {
                 ["class_type"] = "CheckpointLoaderSimple",
                 ["inputs"] = new JObject()
                 {
                     ["ckpt_name"] = otherModelData.ToString(format)
                 }
-            },
-            ["6"] = new JObject()
+            };
+        }
+        bool doClip = !baseModelData.IsDiffusionModelsFormat && !otherModelData.IsDiffusionModelsFormat;
+        workflow["6"] = new JObject()
+        {
+            ["class_type"] = "SwarmExtractLora",
+            ["inputs"] = new JObject()
             {
-                ["class_type"] = "SwarmExtractLora",
-                ["inputs"] = new JObject()
-                {
-                    ["base_model"] = new JArray() { "4", 0 },
-                    ["base_model_clip"] = new JArray() { "4", 1 },
-                    ["other_model"] = new JArray() { "5", 0 },
-                    ["other_model_clip"] = new JArray() { "5", 1 },
-                    ["rank"] = rank,
-                    ["save_rawpath"] = Program.T2IModelSets["LoRA"].FolderPaths[0] + "/",
-                    ["save_filename"] = outName.Replace('\\', '/').Replace("/", format ?? $"{Path.DirectorySeparatorChar}"),
-                    ["save_clip"] = "true",
-                    ["metadata"] = metadata.ToString()
-                }
+                ["base_model"] = new JArray() { "4", 0 },
+                ["base_model_clip"] = doClip ? new JArray() { "4", 1 } : null,
+                ["other_model"] = new JArray() { "5", 0 },
+                ["other_model_clip"] = doClip ? new JArray() { "5", 1 } : null,
+                ["rank"] = rank,
+                ["save_rawpath"] = Program.T2IModelSets["LoRA"].FolderPaths[0] + "/",
+                ["save_filename"] = outName.Replace('\\', '/').Replace("/", format ?? $"{Path.DirectorySeparatorChar}"),
+                ["save_clip"] = doClip,
+                ["metadata"] = metadata.ToString()
             }
         };
         Logs.Info($"Starting LoRA extraction (for user {session.User.UserID}) for base '{baseModel}', other '{otherModel}', rank {rank}, output to '{outName}'...");

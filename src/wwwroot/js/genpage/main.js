@@ -67,13 +67,21 @@ function toggleAutoLoadImages() {
     localStorage.setItem('autoLoadImages', `${autoLoadImagesElem.checked}`);
 }
 
+/** Reference to the auto-clear-batch toggle checkbox. */
+let showLoadSpinnersElem = getRequiredElementById('show_load_spinners_checkbox');
+showLoadSpinnersElem.checked = localStorage.getItem('showLoadSpinners') != 'false';
+/** Called when the user changes show-load-spinners toggle to update local storage. */
+function toggleShowLoadSpinners() {
+    localStorage.setItem('showLoadSpinners', `${showLoadSpinnersElem.checked}`);
+}
+
 function clickImageInBatch(div) {
     let imgElem = div.getElementsByTagName('img')[0];
     if (currentImgSrc == div.dataset.src) {
         imageFullView.showImage(div.dataset.src, div.dataset.metadata);
         return;
     }
-    setCurrentImage(div.dataset.src, div.dataset.metadata, div.dataset.batch_id ?? '', imgElem.dataset.previewGrow == 'true');
+    setCurrentImage(div.dataset.src, div.dataset.metadata, div.dataset.batch_id ?? '', imgElem && imgElem.dataset.previewGrow == 'true', false, true, div.dataset.is_placeholder == 'true');
 }
 
 /** "Reuse Parameters" button impl. */
@@ -83,12 +91,14 @@ function copy_current_image_params() {
         return;
     }
     let readable = interpretMetadata(currentMetadataVal);
-    let metadata = JSON.parse(readable).sui_image_params;
-    if ('original_prompt' in metadata) {
-        metadata.prompt = metadata.original_prompt;
+    let metadataFull = JSON.parse(readable);
+    let metadata = metadataFull.sui_image_params;
+    let extra = metadataFull.sui_extra_data || metadata;
+    if ('original_prompt' in extra) {
+        metadata.prompt = extra.original_prompt;
     }
-    if ('original_negativeprompt' in metadata) {
-        metadata.negativeprompt = metadata.original_negativeprompt;
+    if ('original_negativeprompt' in extra) {
+        metadata.negativeprompt = extra.original_negativeprompt;
     }
     // Special hacks to repair edge cases in LoRA reuse
     // There should probably just be a direct "for lora in list, set lora X with weight Y" instead of this
@@ -171,7 +181,7 @@ function formatMetadata(metadata) {
         if (!readable) {
             return '';
         }
-        data = JSON.parse(readable).sui_image_params;
+        data = JSON.parse(readable);
     }
     catch (e) {
         console.log(`Error parsing metadata '${metadata}': ${e}`);
@@ -187,9 +197,23 @@ function formatMetadata(metadata) {
                         key = cleaner(key);
                     }
                     let hash = Math.abs(hashCode(key.toLowerCase().replaceAll(' ', '').replaceAll('_', ''))) % 10;
+                    let title = '';
+                    let keyTitle = '';
                     let added = '';
                     if (key.includes('model') || key.includes('lora') || key.includes('embedding')) {
                         added += ' param_view_block_model';
+                    }
+                    let param = getParamById(key);
+                    if (param) {
+                        key = param.name;
+                        keyTitle = param.description;
+                        if (param.values && param.value_names && param.values.length == param.value_names.length) {
+                            let index = param.values.indexOf(val);
+                            if (index != -1) {
+                                title = val;
+                                val = param.value_names[index];
+                            }
+                        }
                     }
                     if (typeof val == 'object') {
                         result += `<span class="param_view_block tag-text tag-type-${hash}${added}"><span class="param_view_name">${escapeHtml(key)}</span>: `;
@@ -197,13 +221,31 @@ function formatMetadata(metadata) {
                         result += `</span>, `;
                     }
                     else {
-                        result += `<span class="param_view_block tag-text tag-type-${hash}${added}"><span class="param_view_name">${escapeHtml(key)}</span>: <span class="param_view tag-text-soft tag-type-${hash}">${escapeHtml(`${val}`)}</span></span>, `;
+                        result += `<span class="param_view_block tag-text tag-type-${hash}${added}"><span class="param_view_name" title="${escapeHtml(keyTitle)}">${escapeHtml(key)}</span>: <span class="param_view tag-text-soft tag-type-${hash}" title="${escapeHtml(title)}">${escapeHtml(`${val}`)}</span></span>, `;
                     }
                 }
             }
         }
     };
-    appendObject(data);
+    if ('swarm_version' in data.sui_image_params && 'sui_extra_data' in data) {
+        data.sui_extra_data['Swarm Version'] = data.sui_image_params.swarm_version;
+        delete data.sui_image_params.swarm_version;
+    }
+    if ('prompt' in data.sui_image_params && data.sui_image_params.prompt) {
+        appendObject({ 'prompt': data.sui_image_params.prompt });
+        result += '\n<br>';
+        delete data.sui_image_params.prompt;
+    }
+    if ('negativeprompt' in data.sui_image_params && data.sui_image_params.negativeprompt) {
+        appendObject({ 'negativeprompt': data.sui_image_params.negativeprompt });
+        result += '\n<br>';
+        delete data.sui_image_params.negativeprompt;
+    }
+    appendObject(data.sui_image_params);
+    result += '\n<br>';
+    if ('sui_extra_data' in data) {
+        appendObject(data.sui_extra_data);
+    }
     return result;
 }
 
@@ -374,11 +416,16 @@ class ImageFullViewHelper {
     }
 
     showImage(src, metadata) {
+        let isVideo = isVideoExt(src);
+        let imgHtml = `<img class="imageview_popup_modal_img" id="imageview_popup_modal_img" style="cursor:grab;max-width:100%;object-fit:contain;" src="${src}">`;
+        if (isVideo) {
+            imgHtml = `<video class="imageview_popup_modal_img" id="imageview_popup_modal_img" style="cursor:grab;max-width:100%;object-fit:contain;" autoplay loop muted><source src="${src}" type="video/${src.substring(src.lastIndexOf('.') + 1)}"></video>`;
+        }
         this.content.innerHTML = `
         <div class="modal-dialog" style="display:none">(click outside image to close)</div>
         <div class="imageview_modal_inner_div">
             <div class="imageview_modal_imagewrap" id="imageview_modal_imagewrap" style="text-align:center;">
-                <img class="imageview_popup_modal_img" id="imageview_popup_modal_img" style="cursor:grab;max-width:100%;object-fit:contain;" src="${src}">
+                ${imgHtml}
             </div>
             <div class="imageview_popup_modal_undertext">
             ${formatMetadata(metadata)}
@@ -429,7 +476,7 @@ function shiftToNextImagePreview(next = true, expand = false) {
         return;
     }
     let batch_area = getRequiredElementById('current_image_batch');
-    let imgs = [...batch_area.getElementsByTagName('img')];
+    let imgs = [...batch_area.getElementsByTagName('img')].filter(i => findParentOfClass(i, 'image-block-placeholder') == null);
     let index = imgs.findIndex(img => img.src == curImgElem.src);
     if (index == -1) {
         let cleanSrc = (img) => img.src.length > 100 ? img.src.substring(0, 100) + '...' : img.src;
@@ -536,15 +583,15 @@ function toggleStar(path, rawSrc) {
     });
 }
 
-function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, smoothAdd = false, canReparse = true) {
+function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, smoothAdd = false, canReparse = true, isPlaceholder = false) {
     currentImgSrc = src;
     if (metadata) {
         metadata = interpretMetadata(metadata);
     }
     currentMetadataVal = metadata;
-    if ((smoothAdd || !metadata) && canReparse) {
+    let isVideo = isVideoExt(src);
+    if ((smoothAdd || !metadata) && canReparse && !isVideo) {
         let image = new Image();
-        image.src = src;
         image.onload = () => {
             if (!metadata) {
                 parseMetadata(image, (data, parsedMetadata) => {
@@ -555,10 +602,16 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, 
                 setCurrentImage(src, metadata, batchId, previewGrow, false, false);
             }
         };
+        image.src = src;
         return;
     }
     let curImg = getRequiredElementById('current_image');
-    let isVideo = src.endsWith(".mp4") || src.endsWith(".webm") || src.endsWith(".mov");
+    if (isPlaceholder) {
+        curImg.classList.add('current_image_placeholder');
+    }
+    else {
+        curImg.classList.remove('current_image_placeholder');
+    }
     let img;
     let isReuse = false;
     let srcTarget;
@@ -646,9 +699,10 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, 
             quickAppendButton(buttons, name, (e, button) => action(button), extraClass, title);
         }
         else {
-            subButtons.push({ key: name, action: action });
+            subButtons.push({ key: name, action: action, title: title });
         }
     }
+    let isDataImage = src.startsWith('data:');
     includeButton('Use As Init', () => {
         let initImageParam = document.getElementById('input_initimage');
         if (initImageParam) {
@@ -676,6 +730,28 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, 
             tmpImg.src = img.src;
         }
     }, '', 'Sets this image as the Init Image parameter input');
+    includeButton('Use As Image Prompt', () => {
+        let altPromptRegion = document.getElementById('alt_prompt_region');
+        if (!altPromptRegion) {
+            return;
+        }
+        let tmpImg = new Image();
+        tmpImg.crossOrigin = 'Anonymous';
+        tmpImg.onload = () => {
+            let canvas = document.createElement('canvas');
+            canvas.width = tmpImg.naturalWidth;
+            canvas.height = tmpImg.naturalHeight;
+            let ctx = canvas.getContext('2d');
+            ctx.drawImage(tmpImg, 0, 0);
+            canvas.toBlob(blob => {
+                let type = img.src.substring(img.src.lastIndexOf('.') + 1);
+                let file = new File([blob], imagePathClean, { type: `image/${type.length > 0 && type.length < 20 ? type : 'png'}` });
+                imagePromptAddImage(file);
+            });
+        };
+        tmpImg.src = img.src;
+
+    }, '', 'Uses this image as an Image Prompt input');
     includeButton('Edit Image', () => {
         let initImageGroupToggle = document.getElementById('input_group_content_initimage_toggle');
         if (initImageGroupToggle) {
@@ -741,34 +817,37 @@ function setCurrentImage(src, metadata = '', batchId = '', previewGrow = false, 
             console.log(`Error parsing metadata for image: '${e}', metadata was '${metadata}'`);
         }
     }
-    includeButton(metaParsed.is_starred ? 'Starred' : 'Star', (e, button) => {
-        toggleStar(imagePathClean, src);
-    }, (metaParsed.is_starred ? ' star-button button-starred-image' : ' star-button'), 'Toggles this image as starred - starred images get moved to a separate folder and highlighted');
+    if (!isDataImage) {
+        includeButton(metaParsed.is_starred ? 'Starred' : 'Star', (e, button) => {
+            toggleStar(imagePathClean, src);
+        }, (metaParsed.is_starred ? ' star-button button-starred-image' : ' star-button'), 'Toggles this image as starred - starred images get moved to a separate folder and highlighted');
+    }
     includeButton('Reuse Parameters', copy_current_image_params, '', 'Copies the parameters used to generate this image to the current generation settings');
-    includeButton('View In History', () => {
-        let folder = imagePathClean;
-        let lastSlash = folder.lastIndexOf('/');
-        if (lastSlash != -1) {
-            folder = folder.substring(0, lastSlash);
-        }
-        getRequiredElementById('imagehistorytabclickable').click();
-        imageHistoryBrowser.navigate(folder);
-    }, '', 'Jumps the Image History browser to where this image is at.');
-    for (let added of buttonsForImage(imagePathClean, src)) {
+    if (!isDataImage) {
+        includeButton('View In History', () => {
+            let folder = imagePathClean;
+            let lastSlash = folder.lastIndexOf('/');
+            if (lastSlash != -1) {
+                folder = folder.substring(0, lastSlash);
+            }
+            getRequiredElementById('imagehistorytabclickable').click();
+            imageHistoryBrowser.navigate(folder);
+        }, '', 'Jumps the Image History browser to where this image is at.');
+    }
+    for (let added of buttonsForImage(imagePathClean, src, metadata)) {
         if (added.label == 'Star') {
             continue;
         }
         if (added.href) {
-            subButtons.push({ key: added.label, href: added.href, is_download: added.is_download });
+            subButtons.push({ key: added.label, href: added.href, is_download: added.is_download, title: added.title });
         }
         else {
-            includeButton(added.label, added.onclick, '', '');
+            includeButton(added.label, added.onclick, '', added.title);
         }
     }
     quickAppendButton(buttons, 'More &#x2B9F;', (e, button) => {
         let rect = button.getBoundingClientRect();
         new AdvancedPopover('image_more_popover', subButtons, false, rect.x, rect.y + button.offsetHeight + 6, document.body, null);
-
     });
     extrasWrapper.appendChild(buttons);
     let data = createDiv(null, 'current-image-data');
@@ -788,16 +867,44 @@ function appendImage(container, imageSrc, batchId, textPreview, metadata = '', t
     let div = createDiv(null, `image-block image-block-${type} image-batch-${batchId == "folder" ? "folder" : (container.dataset.numImages % 2 ? "1" : "0")}`);
     div.dataset.batch_id = batchId;
     div.dataset.preview_text = textPreview;
+    if (imageSrc.startsWith('DOPLACEHOLDER:')) {
+        let model = imageSrc.substring('DOPLACEHOLDER:'.length);
+        let cache = modelIconUrlCache[model] || modelIconUrlCache[`${model}.safetensors`];
+        if (model && cache) {
+            imageSrc = cache;
+        }
+        else {
+            imageSrc = 'imgs/model_placeholder.jpg';
+        }
+        div.dataset.is_placeholder = true;
+        div.classList.add('image-block-placeholder');
+    }
     div.dataset.src = imageSrc;
     div.dataset.metadata = metadata;
-    let img = document.createElement('img');
+    let isVideo = isVideoExt(imageSrc);
+    let img, srcTarget;
+    if (isVideo) {
+        img = document.createElement('video');
+        img.loop = true;
+        img.autoplay = true;
+        img.muted = true;
+        img.width = 16 * 10;
+        let sourceObj = document.createElement('source');
+        srcTarget = sourceObj;
+        sourceObj.type = `video/${src.substring(src.lastIndexOf('.') + 1)}`;
+        img.appendChild(sourceObj);
+    }
+    else {
+        img = document.createElement('img');
+        srcTarget = img;
+    }
     img.addEventListener('load', () => {
         if (batchId != "folder") {
             let ratio = img.naturalWidth / img.naturalHeight;
             div.style.width = `calc(${roundToStr(ratio * 10, 2)}rem + 2px)`;
         }
     });
-    img.src = imageSrc;
+    srcTarget.src = imageSrc;
     div.appendChild(img);
     if (type == 'legacy') {
         let textBlock = createDiv(null, 'image-preview-text');
@@ -835,7 +942,12 @@ function gotImagePreview(image, metadata, batchId) {
     let batch_div = appendImage('current_image_batch', src, batchId, fname, metadata, 'batch', true);
     batch_div.querySelector('img').dataset.previewGrow = 'true';
     batch_div.addEventListener('click', () => clickImageInBatch(batch_div));
-    if (!document.getElementById('current_image_img') || (autoLoadPreviewsElem.checked && image != 'imgs/model_placeholder.jpg')) {
+    if (showLoadSpinnersElem.checked) {
+        let spinnerDiv = createDiv(null, "loading-spinner-parent", `<div class="loading-spinner"><div class="loadspin1"></div><div class="loadspin2"></div><div class="loadspin3"></div></div>`);
+        batch_div.appendChild(spinnerDiv);
+        uiImprover.runLoadSpinner(spinnerDiv);
+    }
+    if ((!document.getElementById('current_image_img') || autoLoadPreviewsElem.checked) && !image.startsWith('DOPLACEHOLDER:')) {
         setCurrentImage(src, metadata, batchId, true);
     }
     return batch_div;
@@ -895,7 +1007,7 @@ function updateGenCount() {
 }
 
 function makeWSRequestT2I(url, in_data, callback, errorHandle = null) {
-    makeWSRequest(url, in_data, data => {
+    return makeWSRequest(url, in_data, data => {
         if (data.status) {
             updateCurrentStatusDirect(data.status);
         }
@@ -1108,27 +1220,47 @@ function listImageHistoryFolderAndFiles(path, isRefresh, callback, depth) {
     });
 }
 
-function buttonsForImage(fullsrc, src) {
-    return [
-        {
+function buttonsForImage(fullsrc, src, metadata) {
+    let isDataImage = src.startsWith('data:');
+    buttons = [];
+    if (permissions.hasPermission('user_star_images') && !isDataImage) {
+        buttons.push({
             label: 'Star',
+            title: 'Star or unstar this image - starred images get moved to a separate folder and highlighted.',
             onclick: (e) => {
                 toggleStar(fullsrc, src);
             }
-        },
-        {
+        });
+    }
+    if (metadata) {
+        buttons.push({
+            label: 'Copy Raw Metadata',
+            title: `Copies the raw form of the image's metadata to your clipboard (usually JSON text).`,
+            onclick: (e) => {
+                navigator.clipboard.writeText(metadata);
+                doNoticePopover('Copied!', 'notice-pop-green');
+            }
+        });
+    }
+    if (permissions.hasPermission('local_image_folder') && !isDataImage) {
+        buttons.push({
             label: 'Open In Folder',
+            title: 'Opens the folder containing this image in your local PC file explorer.',
             onclick: (e) => {
                 genericRequest('OpenImageFolder', {'path': fullsrc}, data => {});
             }
-        },
-        {
-            label: 'Download',
-            href: src,
-            is_download: true
-        },
-        {
+        });
+    }
+    buttons.push({
+        label: 'Download',
+        title: 'Downloads this image to your PC.',
+        href: src,
+        is_download: true
+    });
+    if (permissions.hasPermission('user_delete_image') && !isDataImage) {
+        buttons.push({
             label: 'Delete',
+            title: 'Deletes this image from the server.',
             onclick: (e) => {
                 genericRequest('DeleteImage', {'path': fullsrc}, data => {
                     if (e) {
@@ -1151,12 +1283,13 @@ function buttonsForImage(fullsrc, src) {
                     }
                 });
             }
-        }
-    ];
+        });
+    }
+    return buttons;
 }
 
 function describeImage(image) {
-    let buttons = buttonsForImage(image.data.fullsrc, image.data.src);
+    let buttons = buttonsForImage(image.data.fullsrc, image.data.src, image.data.metadata);
     let parsedMeta = { is_starred: false };
     if (image.data.metadata) {
         let metadata = image.data.metadata;
@@ -1168,12 +1301,14 @@ function describeImage(image) {
             console.log(`Failed to parse image metadata: ${e}, metadata was ${metadata}`);
         }
     }
-    let description = image.data.name + "\n" + formatMetadata(image.data.metadata);
+    let formattedMetadata = formatMetadata(image.data.metadata);
+    let description = image.data.name + "\n" + formattedMetadata;
     let name = image.data.name;
     let dragImage = image.data.src.endsWith('.html') ? 'imgs/html.jpg' : `${image.data.src}`;
     let imageSrc = image.data.src.endsWith('.html') ? 'imgs/html.jpg' : `${image.data.src}?preview=true`;
     let searchable = description;
-    return { name, description, buttons, 'image': imageSrc, 'dragimage': dragImage, className: parsedMeta.is_starred ? 'image-block-starred' : '', searchable, display: name };
+    let detail_list = [escapeHtml(image.data.name), formattedMetadata.replaceAll('<br>', '&emsp;')];
+    return { name, description, buttons, 'image': imageSrc, 'dragimage': dragImage, className: parsedMeta.is_starred ? 'image-block-starred' : '', searchable, display: name, detail_list };
 }
 
 function selectImageInHistory(image, div) {
@@ -1260,18 +1395,37 @@ function reviseStatusBar() {
 function reviseBackendFeatureSet() {
     currentBackendFeatureSet = Array.from(currentBackendFeatureSet);
     let addMe = [], removeMe = [];
-    if (curModelCompatClass == 'stable-diffusion-v3-medium') {
-        addMe.push('sd3');
+    function doCompatFeature(compatClass, featureFlag) {
+        if (curModelCompatClass && curModelCompatClass.startsWith(compatClass)) {
+            addMe.push(featureFlag);
+        }
+        else {
+            removeMe.push(featureFlag);
+        }
     }
-    else {
-        removeMe.push('sd3');
+    function doAnyCompatFeature(compatClasses, featureFlag) {
+        for (let compatClass of compatClasses) {
+            if (curModelCompatClass && curModelCompatClass.startsWith(compatClass)) {
+                addMe.push(featureFlag);
+                return;
+            }
+        }
+        removeMe.push(featureFlag);
     }
-    if (curModelArch == 'Flux.1-dev') {
-        addMe.push('flux-dev');
+    function doAnyArchFeature(archIds, featureFlag) {
+        for (let archId of archIds) {
+            if (curModelArch && curModelArch.startsWith(archId)) {
+                addMe.push(featureFlag);
+                return;
+            }
+        }
+        removeMe.push(featureFlag);
     }
-    else {
-        removeMe.push('flux-dev');
-    }
+    doCompatFeature('stable-diffusion-v3', 'sd3');
+    doCompatFeature('stable-cascade-v1', 'cascade');
+    doAnyArchFeature(['Flux.1-dev', 'hunyuan-video'], 'flux-dev');
+    doCompatFeature('stable-diffusion-xl-v1', 'sdxl');
+    doAnyCompatFeature(['genmo-mochi-1', 'lightricks-ltx-video', 'hunyuan-video'], 'text2video');
     let anyChanged = false;
     for (let add of addMe) {
         if (!currentBackendFeatureSet.includes(add)) {
@@ -1452,10 +1606,8 @@ function pageSizer() {
     function setPageBars() {
         tweakNegativePromptBox();
         if (altRegion.style.display != 'none') {
-            altText.style.height = 'auto';
-            altText.style.height = `calc(min(15rem, ${Math.max(altText.scrollHeight, 15) + 5}px))`;
-            altNegText.style.height = 'auto';
-            altNegText.style.height = `calc(min(15rem, ${Math.max(altNegText.scrollHeight, 15) + 5}px))`;
+            dynamicSizeTextBox(altText);
+            dynamicSizeTextBox(altNegText);
             altRegion.style.top = `calc(-${altText.offsetHeight + altNegText.offsetHeight + altImageRegion.offsetHeight}px - 2rem)`;
         }
         setCookie('barspot_pageBarTop', pageBarTop, 365);
@@ -1735,6 +1887,7 @@ function resetBatchIfNeeded() {
 
 function loadUserData(callback) {
     genericRequest('GetMyUserData', {}, data => {
+        permissions.updateFrom(data.permissions);
         autoCompletionsList = {};
         if (data.autocompletions) {
             let allSet = [];
@@ -1881,8 +2034,8 @@ function hideRevisionInputs() {
     promptImageArea.innerHTML = '';
     let clearButton = getRequiredElementById('alt_prompt_image_clear_button');
     clearButton.style.display = 'none';
-    let revisionGroup = document.getElementById('input_group_revision');
-    let revisionToggler = document.getElementById('input_group_content_revision_toggle');
+    let revisionGroup = document.getElementById('input_group_imageprompting');
+    let revisionToggler = document.getElementById('input_group_content_imageprompting_toggle');
     if (revisionGroup) {
         revisionToggler.checked = false;
         triggerChangeFor(revisionToggler);
@@ -1893,8 +2046,8 @@ function hideRevisionInputs() {
 }
 
 function showRevisionInputs(toggleOn = false) {
-    let revisionGroup = document.getElementById('input_group_revision');
-    let revisionToggler = document.getElementById('input_group_content_revision_toggle');
+    let revisionGroup = document.getElementById('input_group_imageprompting');
+    let revisionToggler = document.getElementById('input_group_content_imageprompting_toggle');
     if (revisionGroup) {
         toggleGroupOpen(revisionGroup, true);
         if (toggleOn) {
@@ -1915,7 +2068,7 @@ function autoRevealRevision() {
     }
 }
 
-function revisionAddImage(file) {
+function imagePromptAddImage(file) {
     let clearButton = getRequiredElementById('alt_prompt_image_clear_button');
     let promptImageArea = getRequiredElementById('alt_prompt_image_area');
     let reader = new FileReader();
@@ -1944,7 +2097,7 @@ function revisionAddImage(file) {
     reader.readAsDataURL(file);
 }
 
-function revisionInputHandler() {
+function imagePromptInputHandler() {
     let dragArea = getRequiredElementById('alt_prompt_region');
     dragArea.addEventListener('dragover', (e) => {
         e.preventDefault();
@@ -1960,21 +2113,21 @@ function revisionInputHandler() {
             e.stopPropagation();
             for (let file of e.dataTransfer.files) {
                 if (file.type.startsWith('image/')) {
-                    revisionAddImage(file);
+                    imagePromptAddImage(file);
                 }
             }
         }
     });
 }
-revisionInputHandler();
+imagePromptInputHandler();
 
-function revisionImagePaste(e) {
+function imagePromptImagePaste(e) {
     let items = (e.clipboardData || e.originalEvent.clipboardData).items;
     for (let item of items) {
         if (item.kind === 'file') {
             let file = item.getAsFile();
             if (file.type.startsWith('image/')) {
-                revisionAddImage(file);
+                imagePromptAddImage(file);
             }
         }
     }
@@ -2261,6 +2414,17 @@ function storeImageToHistoryWithCurrentParams(img) {
     });
 }
 
+function clearParamFilterInput() {
+    let filter = getRequiredElementById('main_inputs_filter');
+    let filterClearer = getRequiredElementById('clear_input_icon');
+    if (filter.value.length > 0) {
+        filter.value = '';
+        filter.focus();
+        hideUnsupportableParams();
+    }
+    filterClearer.style.display = 'none';
+}
+
 function genpageLoad() {
     console.log('Load page...');
     $('#toptablist').on('shown.bs.tab', function (e) {
@@ -2340,7 +2504,9 @@ function genpageLoad() {
             getRequiredElementById('advanced_options_checkbox').checked = localStorage.getItem('display_advanced') == 'true';
             toggle_advanced();
             setCurrentModel();
-            loadUserData();
+            loadUserData(() => {
+                selectInitialPresetList();
+            });
             for (let callback of sessionReadyCallbacks) {
                 callback();
             }

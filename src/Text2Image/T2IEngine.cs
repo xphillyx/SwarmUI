@@ -35,7 +35,7 @@ namespace SwarmUI.Text2Image
         public static Action<PostBatchEventParams> PostBatchEvent;
 
         /// <summary>Feature flags that don't block a backend from running, such as model-specific flags.</summary>
-        public static HashSet<string> DisregardedFeatureFlags = ["sd3", "flux-dev"];
+        public static HashSet<string> DisregardedFeatureFlags = ["sd3", "flux-dev", "text2video", "cascade", "sdxl"];
 
         /// <summary>Parameters for <see cref="PostBatchEvent"/>.</summary>
         public record class PostBatchEventParams(T2IParamInput UserInput, ImageOutput[] Images);
@@ -99,6 +99,10 @@ namespace SwarmUI.Text2Image
                         return true;
                     }
                     if (!requireModel(T2IParamTypes.Model, "Stable-Diffusion") || !requireModel(T2IParamTypes.RefinerModel, "Stable-Diffusion") || !requireModel(T2IParamTypes.VAE, "VAE"))
+                    {
+                        return false;
+                    }
+                    if (!requireModel(T2IParamTypes.ClipGModel, "Clip") || !requireModel(T2IParamTypes.ClipLModel, "Clip") || !requireModel(T2IParamTypes.T5XXLModel, "Clip"))
                     {
                         return false;
                     }

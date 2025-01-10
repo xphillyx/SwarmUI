@@ -17,8 +17,8 @@ public class Settings : AutoConfiguration
     [ConfigComment("Settings related to networking and the webserver.")]
     public NetworkData Network = new();
 
-    [ConfigComment("Restrictions to apply to default users.")]
-    public UserRestriction DefaultUserRestriction = new();
+    [ConfigComment("Settings related to Swarm server maintenance.")]
+    public ServerMaintenanceData Maintenance = new();
 
     [ConfigComment("Default settings for users (unless the user modifies them, if so permitted).\n(NOTE: Usually, don't edit this. Go to the 'User' tab to edit your User-Settings).")]
     public User DefaultUser = new();
@@ -27,7 +27,16 @@ public class Settings : AutoConfiguration
     public BackendData Backends = new();
 
     [ConfigComment("If this is set to 'true', hides the installer page. If 'false', the installer page will be shown.")]
+    [SettingHidden]
     public bool IsInstalled = false;
+
+    [ConfigComment("The date that this instance was installed.")]
+    [SettingHidden]
+    public string InstallDate = "";
+
+    [ConfigComment("The SwarmUI version that this instance was installed as.")]
+    [SettingHidden]
+    public string InstallVersion = "";
 
     [ConfigComment("Ratelimit, in milliseconds, between Nvidia GPU status queries. Default is 1000 ms (1 second).")]
     public long NvidiaQueryRateLimitMS = 1000;
@@ -39,14 +48,11 @@ public class Settings : AutoConfiguration
     [ConfigComment("If set true, some additional debugging data will be attached where relevant, such as in image metadata.")]
     public bool AddDebugData = false;
 
-    [ConfigComment("If set true, new/upcoming/experimental features will be visible.")]
+    [ConfigComment("If set true, new/upcoming/experimental features will be visible.\nEnabling this will cause issues, do not expect a stable server.\nDo not report any bugs while this is enabled, and do not request new features related to experimental features.")]
     public bool ShowExperimentalFeatures = false;
 
-    [ConfigComment("If true, Swarm will check if there's any updates available during startup. If false, it will not check for updates.\nUpdate check only downloads a simple JSON from GitHub to get the current version info, it does not transmit any telemetry nor does it download any files or apply the update.\nDefaults to true.")]
-    public bool CheckForUpdates = true;
-
-    [ConfigComment("If true, Swarm will automatically download and apply any development version updates as soon as they're available.\nDefaults to false.")]
-    public bool AutoPullDevUpdates = false;
+    [ConfigComment("Settings related to authorization.")]
+    public AuthorizationData Authorization = new();
 
     [ConfigComment("Settings related to logging.")]
     public LogsData Logs = new();
@@ -59,6 +65,35 @@ public class Settings : AutoConfiguration
 
     [ConfigComment("Settings related to server performance.")]
     public PerformanceData Performance = new();
+
+    /// <summary>Settings related to Swarm server maintenance..</summary>
+    public class ServerMaintenanceData : AutoConfiguration
+    {
+        [ConfigComment("If true, Swarm will check if there's any updates available during startup. If false, it will not check for updates.\nUpdate check only runs a 'git fetch' from GitHub to get the list of git version tags, it does not transmit any telemetry nor does it actually apply the update.\nDefaults to true.")]
+        public bool CheckForUpdates = true;
+
+        [ConfigComment("If true, Swarm will automatically download and apply any development version updates as soon as they're available.\nDefaults to false.")]
+        public bool AutoPullDevUpdates = false;
+
+        [ConfigComment("If the server has been running more than this many hours, automatically restart.\nIf set to 0, no automatic restart.\nOnly restarts when the server is not processing any generation requests.\nCan use decimal values, but sub-hour durations are likely too fast and will cause issues.\nA value of eg 24 is reasonable, with AutoPullDevUpdates enabled, to keep an updated persistent server.")]
+        public double RestartAfterHours = 0;
+
+        [ConfigComment("Comma-separated list of numeric 24-hour time hours in which auto-restarting is allowed.\nIf empty, hours are unrestricted.\nFor example, '0,1,2,3' only allows auto-restarting from midnight up until before 4 am.\nOr, '22,23,0,1' allows 10pm-2am.")]
+        public string RestartHoursAllowed = "";
+
+        [ConfigComment("Comma-separated list of numeric days-of-week in which auto-restarting is allowed. Sunday is 0, Saturday is 6.\nIf empty, days are unrestricted.\nFor example, '6,0' only allows auto-restarting from Sunday/Saturday.")]
+        public string RestartDayAllowed = "";
+    }
+
+    /// <summary>Settings related to authorization.</summary>
+    public class AuthorizationData : AutoConfiguration
+    {
+        [ConfigComment("If true, Swarm will require users to log in or use an API key to access the UI. If false, the UI will be open to anyone who can connect to it.\nDefaults to false.")]
+        public bool AuthorizationRequired = false;
+
+        [ConfigComment("If true, a direct connection from localhost can bypass login requirements.\nIf false, even local users will be required to login (they can just go manually edit the server settings file to toggle this though).\nDefaults to true.")]
+        public bool AllowLocalhostBypass = true;
+    }
 
     /// <summary>Settings related to logging.</summary>
     public class LogsData : AutoConfiguration
@@ -85,6 +120,9 @@ public class Settings : AutoConfiguration
 
         [ConfigComment("Can be enabled to cache certain backend data.\nFor example, with ComfyUI backends this will add an extended cache on the object_info data.\nDefaults to false.")]
         public bool DoBackendDataCache = false;
+
+        [ConfigComment("If true, Swarm may use GPU-specific optimizations.\nIf false, Swarm will not try to optimize anything in a way specific to the GPU(s) you have.\nIf you encounter error that are solved by turning this off, please report that as a bug immediately.\nDefaults to 'true'. Should be left as 'true' in almost all circumstances.")]
+        public bool AllowGpuSpecificOptimizations = true;
     }
 
     /// <summary>Settings related to backends.</summary>
@@ -103,6 +141,9 @@ public class Settings : AutoConfiguration
 
         [ConfigComment("The maximum number of pending requests to continue forcing orderly processing of.\nOver this limit, requests may start going out of order.")]
         public int MaxRequestsForcedOrder = 20;
+
+        [ConfigComment("If true, max t2i simultaneous value is not limited by backend count.\nIe, users may queue as many gens as they want directly to backends, with no overload prevention.\nThis may be preferable on personal instances of Swarm to enforce stricter queue ordering.\nUser role max t2i simultaneous value is still applied.")]
+        public bool UnrestrictedMaxT2iSimultaneous = false;
 
         [ConfigComment("How many minutes to wait after the last generation before automatically freeing up VRAM (to prevent issues with other programs).\nThis has the downside of a small added bit of time to load back onto VRAM at next usage.\nUse a decimal number to free after seconds.\nDefaults to 10 minutes.")]
         public double ClearVRAMAfterMinutes = 10;
@@ -165,7 +206,7 @@ public class Settings : AutoConfiguration
         [ConfigComment("Root path for model files. Use a full-formed path (starting with '/' or a Windows drive like 'C:') to use an absolute path.\nDefaults to 'Models'.\nUse a semicolon ';' to split multiple paths.")]
         public string ModelRoot = "Models";
 
-        public string ActualModelRoot => Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, ModelRoot);
+        public string ActualModelRoot => Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, ModelRoot.Split(';')[0]);
 
         [ConfigComment("The model folder to use within 'ModelRoot'.\nDefaults to 'Stable-Diffusion'.\nAbsolute paths work too.\nUse a semicolon ';' to split multiple paths.")]
         public string SDModelFolder = "Stable-Diffusion";
@@ -202,6 +243,18 @@ public class Settings : AutoConfiguration
 
         [ConfigComment("If true, when a user deletes an image, send it to the OS Recycle Bin instead of permanently deleting it.\nIf false, image files are permanently deleted.\nDefaults to false.")]
         public bool RecycleDeletedImages = false;
+
+        [ConfigComment("If true, when a user deletes a model, send it to the OS Recycle Bin instead of permanently deleting it.\nIf false, model files are permanently deleted.\nDefaults to false.")]
+        public bool RecycleDeletedModels = false;
+
+        [ConfigComment("If true, when a user edits a model's metadata, clear all stray data (eg old images, jsons, etc.) even from other UIs.\nIf false, only files controlled by Swarm will be altered.\nDefaults to false.")]
+        public bool ClearStrayModelData = false;
+
+        [ConfigComment("If true, when a user edits a model's metadata, if there are multiple copies of that model in different folders, edit all copies.\nBe warned that if the models with the same name are different, the unique data maybe lost.\nThis is only a relevant option for users with redundant storage (eg a local drive and a NAS).\nThis also applies to deletes and renames.\nIf false, only the file in the first folder will be edited.\nDefaults to false.")]
+        public bool EditMetadataAcrossAllDups = false;
+
+        [ConfigComment("If true, always resave models after the downloader utility grabs them.\nThis ensures metadata is fully properly set, but wastes some extra time on file processing.\nIf false, the downloader will leave a stray json next to the model.\nDefaults to false.")]
+        public bool DownloaderAlwaysResave = false;
     }
 
     /// <summary>Settings related to image/model metadata.</summary>
@@ -218,37 +271,9 @@ public class Settings : AutoConfiguration
 
         [ConfigComment("If true, editing model metadata should write a '.swarm.json' file next to the model.\nIf false, apply metadata to the model itself.\nApplying directly to the model is generally better, however the JSON file might be preferable if you have a very slow data drive, as it avoids rewriting the model content.")]
         public bool EditMetadataWriteJSON = false;
-    }
 
-    /// <summary>Settings to control restrictions on users.</summary>
-    public class UserRestriction : AutoConfiguration
-    {
-        [ConfigComment("How many directories deep a user's custom OutPath can be.\nDefault is 5.")]
-        public int MaxOutPathDepth = 5;
-
-        [ConfigComment("Which user-settings the user is allowed to modify.\nDefault is all of them.")]
-        public List<string> AllowedSettings = ["*"];
-
-        [ConfigComment("If true, the user is treated as a full admin.\nThis includes the ability to modify these settings.")]
-        public bool Admin = false;
-
-        [ConfigComment("If true, user may load models.\nIf false, they may only use already-loaded models.")]
-        public bool CanChangeModels = true;
-
-        [ConfigComment("What models are allowed, as a path regex.\nDirectory-separator is always '/'. Can be '.*' for all, 'MyFolder/.*' for only within that folder, etc.\nDefault is all.")]
-        public string AllowedModels = ".*";
-
-        [ConfigComment("Generic permission flags. '*' means all.\nDefault is all.")]
-        public List<string> PermissionFlags = ["*"];
-
-        [ConfigComment("How many images can try to be generating at the same time on this user.")]
-        public int MaxT2ISimultaneous = 32;
-
-        /// <summary>Returns the maximum simultaneous text-2-image requests appropriate to this user's restrictions and the available backends.</summary>
-        public int CalcMaxT2ISimultaneous => Math.Max(1, Math.Min(MaxT2ISimultaneous, Program.Backends.RunningBackendsOfType<AbstractT2IBackend>().Sum(b => b.MaxUsages) * 2));
-
-        [ConfigComment("Whether the '.' symbol can be used in OutPath - if enabled, users may cause file system issues or perform folder escapes.")]
-        public bool AllowUnsafeOutpaths = false;
+        [ConfigComment("If true, image metadata will include a list of models with their hashes.\nThis is useful for services like civitai to automatically link models.\nThis will cause extra time to be taken when new hashes need to be loaded.")]
+        public bool ImageMetadataIncludeModelHash = false;
     }
 
     /// <summary>Settings per-user.</summary>
@@ -295,6 +320,14 @@ public class Settings : AutoConfiguration
         [ConfigComment("If true, folders will be discarded from starred image paths.")]
         public bool StarNoFolders = false;
 
+        [ConfigComment("List of role IDs applied to this user. Defaults to owner (for local/accountless usage).")]
+        [ValueIsRestricted]
+        public List<string> Roles = ["owner"];
+
+        [ConfigComment("The user's password.\nThis is not stored in user-readable format.\nReplace the value to set a new password.")]
+        [ValueIsSecret]
+        public string Password = "";
+
         public class ThemesImpl : SettingsOptionsAttribute.AbstractImpl
         {
             public override string[] GetOptions => [.. Program.Web.RegisteredThemes.Keys];
@@ -313,7 +346,7 @@ public class Settings : AutoConfiguration
         public bool AutoSwapImagesIncludesFullView = false;
 
         [ConfigComment("A list of what buttons to include directly under images in the main prompt area of the Generate tab.\nOther buttons will be moved into the 'More' dropdown.\nThis should be a comma separated list."
-            + "\nThe following options are available: \"Use As Init\", \"Edit Image\", \"Upscale 2x\", \"Star\", \"Reuse Parameters\", \"Open In Folder\", \"Delete\", \"View In History\", \"Refine Image\""
+            + "\nThe following options are available: \"Use As Init\", \"Use As Image Prompt\", \"Edit Image\", \"Upscale 2x\", \"Star\", \"Reuse Parameters\", \"Open In Folder\", \"Delete\", \"Download\" \"View In History\", \"Refine Image\""
             + "\nThe default is blank, which currently implies 'Use As Init,Edit Image,Star,Reuse Parameters'")]
         public string ButtonsUnderMainImages = "";
 
@@ -332,6 +365,9 @@ public class Settings : AutoConfiguration
         [ConfigComment("The delay, in seconds, for parameter hints when 'HOVER_DELAY' is selected.")]
         public float HoverDelaySeconds = 0.5f;
 
+        [ConfigComment("How many lines of text to display in the standard prompt box before cutting off to a scroll bar.\nActual size in practice tends to be a few lines shorter due to browser and font variations.\nDefault is 10.")]
+        public int MaxPromptLines = 10;
+
         public class VAEsData : AutoConfiguration
         {
             [ConfigComment("What VAE to use with SDXL models by default. Use 'None' to use the one in the model.")]
@@ -349,6 +385,14 @@ public class Settings : AutoConfiguration
             [ConfigComment("What VAE to use with Flux models by default.")]
             [ManualSettingsOptions(Impl = null, Vals = ["None"])]
             public string DefaultFluxVAE = "None";
+
+            [ConfigComment("What VAE to use with SD3 models by default.")]
+            [ManualSettingsOptions(Impl = null, Vals = ["None"])]
+            public string DefaultSD3VAE = "None";
+
+            [ConfigComment("What VAE to use with Mochi Text2Video models by default.")]
+            [ManualSettingsOptions(Impl = null, Vals = ["None"])]
+            public string DefaultMochiVAE = "None";
         }
 
         [ConfigComment("Options to override default VAEs with.")]
@@ -369,7 +413,7 @@ public class Settings : AutoConfiguration
         [ConfigComment("If true, the Image History view will cache small preview thumbnails of images.\nThis should make things run faster. You can turn it off if you don't want that.")]
         public bool ImageHistoryUsePreviews = true;
 
-        [ConfigComment("Delay, in seconds, betweeen Generate Forever updates.\nIf the delay hits and a generation is still waiting, it will be skipped.\nDefault is 0.1 seconds.")]
+        [ConfigComment("Delay, in seconds, between Generate Forever updates.\nIf the delay hits and a generation is still waiting, it will be skipped.\nDefault is 0.1 seconds.")]
         public double GenerateForeverDelay = 0.1;
 
         [ConfigComment("Number of generations that Generate Forever should always keep queued up when enabled.\nUseful when using multiple backends to keep them all busy.")]
@@ -427,6 +471,9 @@ public class Settings : AutoConfiguration
     {
         [ConfigComment("Optionally specify a (raw HTML) welcome message here. If specified, will override the automatic welcome messages.")]
         public string OverrideWelcomeMessage = "";
+
+        [ConfigComment("Animated previews make the image history nicer when you've generated videos, but may negatively impact performance.\nIf having image history loaded with videos generated is negatively affecting your experience, disable this checkbox.\nAfter editing this setting, use the Reset All Metadata button in the Utilities tab.")]
+        public bool AllowAnimatedPreviews = true;
     }
 
     /// <summary>Webhook settings.</summary>
@@ -455,6 +502,18 @@ public class Settings : AutoConfiguration
 
         [ConfigComment("If you want to send additional data with the 'manual gen' webhook, you can specify it here.\nThis should be a JSON object, eg '{\"key\": \"value\"}'.\nIf left blank, an empty JSON post (ie '{}') will be used." + $"\nSee <a target=\"_blank\" href=\"{Utilities.RepoDocsRoot}Features/Webhooks.md\">docs Features/Webhooks</a> for info about special tags you can include in the JSON.")]
         public string ManualGenWebhookData = "";
+
+        [ConfigComment("Webhook to call (JSON POST) when the server is has started.\nLeave empty to disable any webhook.")]
+        public string ServerStartWebhook = "";
+
+        [ConfigComment("If you want to send additional data with the 'server start' webhook, you can specify it here.\nThis should be a JSON object, eg '{\"key\": \"value\"}'.\nIf left blank, an empty JSON post (ie '{}') will be used.")]
+        public string ServerStartWebhookData = "";
+
+        [ConfigComment("Webhook to call (JSON POST) when the server is about to shutdown.\nLeave empty to disable any webhook.\nShutdown does not happen until the webhook completes.")]
+        public string ServerShutdownWebhook = "";
+
+        [ConfigComment("If you want to send additional data with the 'server shutdown' webhook, you can specify it here.\nThis should be a JSON object, eg '{\"key\": \"value\"}'.\nIf left blank, an empty JSON post (ie '{}') will be used.")]
+        public string ServerShutdownWebhookData = "";
 
         [ConfigComment("How long to wait (in seconds) after all queues are done before sending the queue end webhook.\nThis is useful to prevent rapid start+end calls.")]
         public double QueueEndDelay = 1;
@@ -498,6 +557,18 @@ public class ManualSettingsOptionsAttribute : SettingsOptionsAttribute
 /// <summary>Attribute that marks that the value should be treated as a secret, and not transmitted to remote clients.</summary>
 [AttributeUsage(AttributeTargets.Field)]
 public class ValueIsSecretAttribute : Attribute
+{
+}
+
+/// <summary>Attribute that marks that the value should be restricted from non-admin user access.</summary>
+[AttributeUsage(AttributeTargets.Field)]
+public class ValueIsRestrictedAttribute : Attribute
+{
+}
+
+/// <summary>Attribute that marks that the setting is hidden from the normal interface.</summary>
+[AttributeUsage(AttributeTargets.Field)]
+public class SettingHiddenAttribute : Attribute
 {
 }
 

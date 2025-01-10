@@ -2,6 +2,7 @@
 using FreneticUtilities.FreneticExtensions;
 using FreneticUtilities.FreneticToolkit;
 using Hardware.Info;
+using Microsoft.VisualBasic.FileIO;
 using Newtonsoft.Json.Linq;
 using SwarmUI.Accounts;
 using SwarmUI.Core;
@@ -18,22 +19,30 @@ public static class AdminAPI
 {
     public static void Register()
     {
-        API.RegisterAPICall(ListServerSettings);
-        API.RegisterAPICall(ChangeServerSettings, true);
-        API.RegisterAPICall(ListLogTypes);
-        API.RegisterAPICall(ListRecentLogMessages);
-        API.RegisterAPICall(LogSubmitToPastebin, true);
-        API.RegisterAPICall(ShutdownServer, true);
-        API.RegisterAPICall(GetServerResourceInfo);
-        API.RegisterAPICall(DebugLanguageAdd, true);
-        API.RegisterAPICall(DebugGenDocs, true);
-        API.RegisterAPICall(ListConnectedUsers);
-        API.RegisterAPICall(UpdateAndRestart, true);
-        API.RegisterAPICall(InstallExtension, true);
-        API.RegisterAPICall(UpdateExtension, true);
+        API.RegisterAPICall(ListServerSettings, false, Permissions.ReadServerSettings);
+        API.RegisterAPICall(ChangeServerSettings, true, Permissions.EditServerSettings);
+        API.RegisterAPICall(ListLogTypes, false, Permissions.ViewLogs);
+        API.RegisterAPICall(ListRecentLogMessages, false, Permissions.ViewLogs);
+        API.RegisterAPICall(LogSubmitToPastebin, true, Permissions.ViewLogs);
+        API.RegisterAPICall(ShutdownServer, true, Permissions.Shutdown);
+        API.RegisterAPICall(GetServerResourceInfo, false, Permissions.ReadServerInfoPanels);
+        API.RegisterAPICall(DebugLanguageAdd, true, Permissions.AdminDebug);
+        API.RegisterAPICall(DebugGenDocs, true, Permissions.AdminDebug);
+        API.RegisterAPICall(ListConnectedUsers, false, Permissions.ReadServerInfoPanels);
+        API.RegisterAPICall(UpdateAndRestart, true, Permissions.Restart);
+        API.RegisterAPICall(InstallExtension, true, Permissions.ManageExtensions);
+        API.RegisterAPICall(UpdateExtension, true, Permissions.ManageExtensions);
+        API.RegisterAPICall(UninstallExtension, true, Permissions.ManageExtensions);
+        API.RegisterAPICall(AdminListUsers, false, Permissions.ManageUsers);
+        API.RegisterAPICall(AdminAddUser, true, Permissions.ManageUsers);
+        API.RegisterAPICall(AdminDeleteUser, true, Permissions.ManageUsers);
+        API.RegisterAPICall(AdminListRoles, false, Permissions.ConfigureRoles);
+        API.RegisterAPICall(AdminAddRole, true, Permissions.ConfigureRoles);
+        API.RegisterAPICall(AdminDeleteRole, true, Permissions.ConfigureRoles);
+        API.RegisterAPICall(AdminListPermissions, false, Permissions.ConfigureRoles);
     }
 
-    public static JObject AutoConfigToParamData(AutoConfiguration config)
+    public static JObject AutoConfigToParamData(AutoConfiguration config, bool hideRestricted = false)
     {
         JObject output = [];
         foreach ((string key, AutoConfiguration.Internal.SingleFieldData data) in config.InternalData.SharedData.Fields)
@@ -49,6 +58,14 @@ public static class AdminAPI
             {
                 val = AutoConfigToParamData(subConf);
             }
+            if (data.Field.GetCustomAttribute<SettingHiddenAttribute>() is not null)
+            {
+                continue;
+            }
+            if (hideRestricted && data.Field.GetCustomAttribute<ValueIsRestrictedAttribute>() is not null)
+            {
+                continue;
+            }
             string[] vals = data.Field.GetCustomAttribute<SettingsOptionsAttribute>()?.Options ?? null;
             string[] val_names = null;
             if (vals is not null)
@@ -63,7 +80,8 @@ public static class AdminAPI
                 ["value"] = isSecret ? "\t<secret>" : JToken.FromObject(val is List<string> list ? list.JoinString(" || ") : val),
                 ["description"] = data.Field.GetCustomAttribute<AutoConfiguration.ConfigComment>()?.Comments ?? "",
                 ["values"] = vals == null ? null : new JArray(vals),
-                ["value_names"] = val_names == null ? null : new JArray(val_names)
+                ["value_names"] = val_names == null ? null : new JArray(val_names),
+                ["is_secret"] = isSecret
             };
         }
         return output;
@@ -113,6 +131,11 @@ public static class AdminAPI
                 Logs.Error($"User '{session.User.UserID}' tried to set unknown server setting '{key}' to '{val}'.");
                 continue;
             }
+            if (field.Field.GetCustomAttribute<SettingHiddenAttribute>() is not null)
+            {
+                Logs.Error($"User '{session.User.UserID}' tried to set server setting '{key}' of type '{field.Field.FieldType.Name}' to '{val}', but that setting is marked as hidden from the normal interface.");
+                continue;
+            }
             bool isSecret = field.Field.GetCustomAttribute<ValueIsSecretAttribute>() is not null;
             object obj = DataToType(val, field.Field.FieldType);
             if (obj is null)
@@ -143,7 +166,7 @@ public static class AdminAPI
                 {
                     foreach (string subpath in path.Split(';').Where(p => !string.IsNullOrWhiteSpace(p)))
                     {
-                        Directory.CreateDirectory(Utilities.CombinePathWithAbsolute(Program.ServerSettings.Paths.ModelRoot, subpath));
+                        Directory.CreateDirectory(Utilities.CombinePathWithAbsolute(Program.ServerSettings.Paths.ActualModelRoot, subpath));
                     }
                 }
             }
@@ -276,7 +299,7 @@ public static class AdminAPI
         {
             rawLogText.Append($"{message.Time:yyyy-MM-dd HH:mm:ss.fff} [{mLevel}] {message.Message}\n");
         }
-        string logText = rawLogText.ToString();
+        string logText = rawLogText.ToString().Replace('\0', ' ');
         if (logText.Length > 3 * 1024 * 1024)
         {
             logText = logText[0..(100 * 1024)] + "\n\n\n... (log too long, truncated) ..." + logText[^(2500 * 1024)..];
@@ -296,7 +319,7 @@ public static class AdminAPI
         HttpResponseMessage response = await Utilities.UtilWebClient.PostAsync("https://paste.denizenscript.com/New/Swarm", content, Program.GlobalProgramCancel);
         string responseString = await response.Content.ReadAsStringAsync();
         responseString = responseString.Trim();
-        if (responseString.StartsWith("<!DOCTYPE html"))
+        if (responseString.StartsWith("<!DOCTYPE html") || responseString.StartsWith("System."))
         {
             responseString = responseString.Before('\n');
             if (responseString.Length > 100)
@@ -508,5 +531,249 @@ public static class AdminAPI
         }
         File.WriteAllText("src/bin/must_rebuild", "yes");
         return new JObject() { ["success"] = true };
+    }
+
+    [API.APIDescription("Triggers an extension uninstallation for an installed extension. Does not trigger a restart. Does signal required rebuild.",
+        """
+            "success": true
+        """)]
+    public static async Task<JObject> UninstallExtension(Session session,
+        [API.APIParameter("The name of the extension to uninstall.")] string extensionName)
+    {
+        Extension ext = Program.Extensions.Extensions.FirstOrDefault(e => e.ExtensionName == extensionName);
+        if (ext is null)
+        {
+            return new JObject() { ["error"] = "Unknown extension." };
+        }
+        string path = Path.GetFullPath(Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, ext.FilePath));
+        Logs.Debug($"Will clear out Extension path: {path}");
+        if (!Directory.Exists(path))
+        {
+            return new JObject() { ["error"] = "Extension has invalid path, cannot delete." };
+        }
+        File.WriteAllText("src/bin/must_rebuild", "yes");
+        try
+        {
+            FileSystem.DeleteDirectory(path, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin, UICancelOption.ThrowException);
+            return new JObject() { ["success"] = true };
+        }
+        catch (Exception ex)
+        {
+            Logs.Debug($"Failed to send extension folder to recycle, will try to delete permanently -- error was {ex.ReadableString()}");
+        }
+        try
+        {
+            Directory.Move(path, path + ".delete");
+        }
+        catch (Exception ex)
+        {
+            Logs.Error($"Failed to move extension folder to delete folder: {ex.ReadableString()}");
+            return new JObject() { ["error"] = "Extension deletion failed, you will need to manually delete the extension folder from inside SwarmUI/src/Extensions" };
+        }
+        path = $"{path}.delete";
+        try
+        {
+            Directory.Delete(path, true);
+        }
+        catch (Exception)
+        {
+            Logs.Debug($"Delete failed, will wait a minute then try again...");
+            await Task.Delay(TimeSpan.FromMinutes(1));
+            try
+            {
+                Directory.Delete(path, true);
+            }
+            catch (Exception ex)
+            {
+                Logs.Error($"Failed to delete extension folder: {ex.ReadableString()}");
+                return new JObject() { ["error"] = "Extension deletion failed, will retry deleting it after SwarmUI restarts" };
+            }
+        }
+        return new JObject() { ["success"] = true };
+    }
+
+    [API.APIDescription("Admin route to get a list of all known users by ID.",
+        """
+            "users": [
+                "user1",
+                "user2"
+            ]
+        """)]
+    public static async Task<JObject> AdminListUsers(Session session)
+    {
+        List<string> users = Program.Sessions.UserDatabase.FindAll().Select(u => u.ID).ToList();
+        return new JObject() { ["users"] = JArray.FromObject(users) };
+    }
+
+    [API.APIDescription("Admin route to create a new user account.",
+        """
+            "success": true
+        """)]
+    public static async Task<JObject> AdminAddUser(Session session,
+        [API.APIParameter("The name of the new user.")] string name,
+        [API.APIParameter("Initial password for the new user.")] string password,
+        [API.APIParameter("Initial role for the new user.")] string role)
+    {
+        string cleaned = Utilities.StrictFilenameClean(name).ToLowerFast().Replace('/', '_');
+        lock (Program.Sessions.DBLock)
+        {
+            User existing = Program.Sessions.GetUser(cleaned, false);
+            if (existing is not null)
+            {
+                return new JObject() { ["error"] = "A user by that name already exists." };
+            }
+            User.DatabaseEntry userData = new() { ID = cleaned, RawSettings = "\n" };
+            User user = new(Program.Sessions, userData);
+            user.Settings.Roles = [role];
+            user.Settings.Password = Utilities.HashPassword(cleaned, password);
+            Program.Sessions.Users.TryAdd(cleaned, user);
+            user.Save();
+        }
+        return new JObject() { ["success"] = true };
+    }
+
+    [API.APIDescription("Admin route to delete an existing user account.",
+        """
+            "success": true
+        """)]
+    public static async Task<JObject> AdminDeleteUser(Session session,
+        [API.APIParameter("The name of the user to delete.")] string name)
+    {
+        lock (Program.Sessions.DBLock)
+        {
+            User user = Program.Sessions.GetUser(name, false);
+            if (user is null)
+            {
+                return new JObject() { ["error"] = "No user by that name exists." };
+            }
+            if (session.User.UserID == user.UserID)
+            {
+                return new JObject() { ["error"] = "You may not delete yourself." };
+            }
+            Program.Sessions.RemoveUser(user);
+        }
+        return new JObject() { ["success"] = true };
+    }
+
+    [API.APIDescription("Admin route to get a list of all available roles.",
+        """
+            "roles": [
+                "user": {
+                    "name": "User",
+                    "description": "Text here...",
+                    "max_out_depth_path": 5,
+                    "is_auto_generated": true,
+                    "model_whitelist": [],
+                    "model_blacklist": [],
+                    "permissions": ["first", "second"],
+                    "max_t2i_simultaneous": 32,
+                    "allow_unsafe_outpaths": false
+                }
+            ]
+        """)]
+    public static async Task<JObject> AdminListRoles(Session session)
+    {
+        JObject roles = [];
+        foreach (Role role in Program.Sessions.Roles.Values)
+        {
+            roles[role.ID] = new JObject()
+            {
+                ["name"] = role.Data.Name,
+                ["description"] = role.Data.Description,
+                ["max_outpath_depth"] = role.Data.MaxOutPathDepth,
+                ["is_auto_generated"] = role.IsAutoGenerated,
+                ["model_whitelist"] = JArray.FromObject(role.Data.ModelWhitelist.ToList()),
+                ["model_blacklist"] = JArray.FromObject(role.Data.ModelBlacklist.ToList()),
+                ["permissions"] = JArray.FromObject(role.Data.PermissionFlags.ToList()),
+                ["max_t2i_simultaneous"] = role.Data.MaxT2ISimultaneous,
+                ["allow_unsafe_outpaths"] = role.Data.AllowUnsafeOutpaths
+            };
+        }
+        return new JObject() { ["roles"] = roles };
+    }
+
+    [API.APIDescription("Admin route to create a new user permission role.",
+        """
+            "success": true
+        """)]
+    public static async Task<JObject> AdminAddRole(Session session,
+        [API.APIParameter("The name of the new role.")] string name)
+    {
+        string cleaned = Utilities.StrictFilenameClean(name).ToLowerFast().Replace('/', '_');
+        lock (Program.Sessions.DBLock)
+        {
+            Role newRole = new(name);
+            newRole.Data.Name = name;
+            if (!Program.Sessions.Roles.TryAdd(cleaned, newRole))
+            {
+                return new JObject() { ["error"] = "A role by that name already exists." };
+            }
+            Program.Sessions.Save();
+        }
+        return new JObject() { ["success"] = true };
+    }
+
+    [API.APIDescription("Admin route to delete an existing user permission role.",
+        """
+            "success": true
+        """)]
+    public static async Task<JObject> AdminDeleteRole(Session session,
+        [API.APIParameter("The name of the new role.")] string name)
+    {
+        lock (Program.Sessions.DBLock)
+        {
+            if (!Program.Sessions.Roles.TryGetValue(name, out Role existing))
+            {
+                return new JObject() { ["error"] = "No role by that name exists." };
+            }
+            if (existing.IsAutoGenerated)
+            {
+                return new JObject() { ["error"] = "That role is an auto-generated core role and cannot be deleted." };
+            }
+            if (!Program.Sessions.Roles.TryRemove(new(name, existing)))
+            {
+                return new JObject() { ["error"] = "Role removal failed." };
+            }
+            Program.Sessions.Save();
+        }
+        return new JObject() { ["success"] = true };
+    }
+
+    [API.APIDescription("Admin route to get a list of all available permissions.",
+        """
+            "permissions": [
+                "perm_name": {
+                    "name": "Perm Name",
+                    "description": "Description text for the perm",
+                    "default": "USER",
+                    "group": {
+                        "name": "My Group",
+                        "description": "Some group description"
+                    },
+                    "safety_level": "UNTESTED",
+                    "alt_safety_text": "some text here or null"
+                }
+            ]
+        """)]
+    public static async Task<JObject> AdminListPermissions(Session session)
+    {
+        JObject permissions = [];
+        foreach (PermInfo perm in Permissions.Registered.Values)
+        {
+            permissions[perm.ID] = new JObject()
+            {
+                ["name"] = perm.DisplayName,
+                ["description"] = perm.Description,
+                ["default"] = $"{perm.Default}",
+                ["group"] = new JObject()
+                {
+                    ["name"] = perm.Group.DisplayName,
+                    ["description"] = perm.Group.Description
+                },
+                ["safety_level"] = $"{perm.SafetyLevel}",
+                ["alt_safety_text"] = perm.AltSafetyText
+            };
+        }
+        return new JObject() { ["permissions"] = permissions, ["ordered"] = JArray.FromObject(Permissions.OrderedKeys) };
     }
 }

@@ -11,6 +11,7 @@ let curModelMenuBrowser = null;
 let loraWeightPref = {};
 let allWildcards = [];
 let nativelySupportedModelExtensions = ["safetensors", "sft", "engine", "gguf"];
+let modelIconUrlCache = {};
 
 function test_wildcard_again() {
     let card = curWildcardMenuWildcard;
@@ -43,10 +44,6 @@ function testWildcard(card) {
         button.disabled = false;
         $('#test_wildcard_modal').modal('show');
     }
-}
-
-function close_test_wildcard() {
-    $('#test_wildcard_modal').modal('hide');
 }
 
 function create_new_wildcard_button() {
@@ -115,10 +112,6 @@ function save_edit_wildcard() {
     }
 }
 
-function close_edit_wildcard() {
-    $('#edit_wildcard_modal').modal('hide');
-}
-
 function editModelGetHashNow() {
     if (curModelMenuModel == null) {
         return;
@@ -155,13 +148,80 @@ function getCivitUrlGuessFor(model) {
         let end = model.description.indexOf('"', civitUrlStartIndex + '<a href="'.length);
         if (end != -1) {
             civitUrl = model.description.substring(civitUrlStartIndex + '<a href="'.length, end);
-            if (!civitUrl.includes("?modelVersionId=") || civitUrl.length > 200) {
+            if (!civitUrl.includes("?modelVersionId=") || civitUrl.length > 200 || civitUrl.includes("?modelVersionId=null")) {
                 console.log(`Invalid CivitAI URL (failed sanity check): ${civitUrl}`);
                 civitUrl = '';
             }
         }
     }
     return civitUrl;
+}
+
+function deleteModel(model, browser) {
+    if (model == null) {
+        return;
+    }
+    curModelMenuModel = model;
+    curModelMenuBrowser = browser;
+    getRequiredElementById('delete_model_name').innerText = model.name;
+    $('#delete_model_modal').modal('show');
+}
+
+function doDeleteModelNow() {
+    let model = curModelMenuModel;
+    if (model == null) {
+        return;
+    }
+    genericRequest('DeleteModel', { 'modelName': model.name, 'subtype': curModelMenuBrowser.subType }, data => {
+        curModelMenuBrowser.browser.update();
+    });
+    $('#delete_model_modal').modal('hide');
+}
+
+function renameModel(model, browser) {
+    if (model == null) {
+        return;
+    }
+    curModelMenuModel = model;
+    curModelMenuBrowser = browser;
+    let lastSlash = model.name.lastIndexOf('/');
+    let name = lastSlash != -1 ? model.name.substring(lastSlash + 1) : model.name;
+    let selector = getRequiredElementById('model_rename_downloader_folder');
+    modelDownloader.buildFolderSelector(selector);
+    selector.value = lastSlash != -1 ? model.name.substring(0, lastSlash) : '(None)';
+    getRequiredElementById('rename_model_name').innerText = model.name;
+    getRequiredElementById('model_rename_downloader_name').value = name;
+    $('#rename_model_modal').modal('show');
+}
+
+function doRenameModelNow() {
+    let model = curModelMenuModel;
+    if (model == null) {
+        return;
+    }
+    let name = getRequiredElementById('model_rename_downloader_name').value.trim();
+    if (name == '') {
+        return;
+    }
+    let folder = getRequiredElementById('model_rename_downloader_folder').value;
+    let newName = folder == '(None)' ? name : `${folder}/${name}`;
+    genericRequest('RenameModel', { 'oldName': model.name, 'newName': newName, 'subtype': curModelMenuBrowser.subType }, data => {
+        curModelMenuBrowser.browser.refresh();
+    });
+    $('#rename_model_modal').modal('hide');
+}
+
+function modelRenameNameInput() {
+    let name = getRequiredElementById('model_rename_downloader_name');
+    if (name.value.trim() == '') {
+        name.style.borderColor = 'red';
+    }
+    else {
+        name.style.borderColor = '';
+    }
+    if (name.value.includes(' ')) {
+        name.value = name.value.replaceAll(' ', '_');
+    }
 }
 
 function editModel(model, browser) {
@@ -246,20 +306,16 @@ function edit_model_load_civitai() {
         return;
     }
     info.innerText = 'Loading...';
-    modelDownloader.getCivitaiMetadata(id, versId, (rawData, rawVersion, metadata, modelType, url, img) => {
+    modelDownloader.getCivitaiMetadata(id, versId, (rawData, rawVersion, metadata, modelType, url, img, errMsg) => {
         if (!rawData) {
-            info.innerText = 'Failed to load metadata.';
+            info.innerText = `Failed to load metadata. ${(errMsg ?? '')}`;
             return;
         }
         getRequiredElementById('edit_model_name').value = metadata['modelspec.title'];
-        getRequiredElementById('edit_model_author').value = metadata['modelspec.author'];
-        getRequiredElementById('edit_model_description').value = metadata['modelspec.description'];
-        getRequiredElementById('edit_model_date').value = metadata['modelspec.date'];
-        if (metadata['modelspec.trigger_phrase']) {
-            getRequiredElementById('edit_model_trigger_phrase').value = metadata['modelspec.trigger_phrase'];
-        }
-        if (metadata['modelspec.tags']) {
-            getRequiredElementById('edit_model_tags').value = metadata['modelspec.tags'];
+        for (let key of ['author', 'description', 'date', 'trigger_phrase', 'usage_hint', 'tags']) {
+            if (metadata[`modelspec.${key}`]) {
+                getRequiredElementById(`edit_model_${key}`).value = metadata[`modelspec.${key}`];
+            }
         }
         if (img) {
             let imageInput = getRequiredElementById('edit_model_image');
@@ -275,7 +331,7 @@ function edit_model_load_civitai() {
             enableImage.disabled = false;
         }
         info.innerText = 'Loaded.';
-    });
+    }, curModelMenuModel.name, false);
 }
 
 function save_edit_model() {
@@ -315,10 +371,6 @@ function save_edit_model() {
     }
 }
 
-function close_edit_model() {
-    $('#edit_model_modal').modal('hide');
-}
-
 function cleanModelName(name) {
     let index = name.lastIndexOf('/');
     if (index != -1) {
@@ -335,6 +387,10 @@ function isModelArchCorrect(model) {
     if (model.compat_class && curModelCompatClass) {
         let slash = model.architecture.indexOf('/');
         if (slash != -1) { // Base models are excluded
+            // VAEs have more mixed intercompat
+            if (model.architecture.endsWith('/vae') && model.compat_class.startsWith('stable-diffusion-v3') && curModelCompatClass.startsWith('stable-diffusion-v3')) {
+                return true;
+            }
             return model.compat_class == curModelCompatClass;
         }
     }
@@ -381,6 +437,8 @@ class ModelBrowserWrapper {
         let format = subType == 'Wildcards' ? 'Small Cards' : 'Cards';
         extraHeader += `<label for="models_${subType}_sort_by">Sort:</label> <select id="models_${subType}_sort_by"><option>Name</option><option>Title</option><option>DateCreated</option><option>DateModified</option></select> <input type="checkbox" id="models_${subType}_sort_reverse"> <label for="models_${subType}_sort_reverse">Reverse</label>`;
         this.browser = new GenPageBrowserClass(container, this.listModelFolderAndFiles.bind(this), id, format, this.describeModel.bind(this), this.selectModel.bind(this), extraHeader);
+        this.promptBox = getRequiredElementById('alt_prompt_textbox');
+        this.models = {};
     }
 
     listModelFolderAndFiles(path, isRefresh, callback, depth) {
@@ -414,6 +472,10 @@ class ModelBrowserWrapper {
             let files = data.files.sort((a,b) => sortModelLocal(a, b, data.files)).map(f => { return { 'name': f.name, 'data': f }; });
             for (let file of files) {
                 file.data.display = cleanModelName(file.data.name.substring(prefix.length));
+                this.models[file.name] = file;
+                if (this.subType == 'Stable-Diffusion') {
+                    modelIconUrlCache[file.name] = file.data.preview_image;
+                }
             }
             if (this.subType == 'VAE') {
                 let autoFile = {
@@ -461,9 +523,12 @@ class ModelBrowserWrapper {
     }
 
     describeModel(model) {
-        let promptBox = getRequiredElementById('alt_prompt_textbox');
         let description = '';
         let buttons = [];
+        let detail_list = [escapeHtml(model.data.name)];
+        if (this.subType == 'Stable-Diffusion') {
+            modelIconUrlCache[model.name] = model.data.preview_image;
+        }
         if (this.subType == 'Stable-Diffusion' && model.data.local) {
             let buttonLoad = () => {
                 directSetModel(model.data);
@@ -486,10 +551,11 @@ class ModelBrowserWrapper {
                     toggleGroupOpen(toggler, true);
                 }
             }
-            buttons = [
-                { label: 'Load Now', onclick: buttonLoad },
-                { label: 'Set as Refiner', onclick: buttonRefiner }
-            ];
+            buttons = [];
+            if (permissions.hasPermission('load_models_now')) {
+                buttons.push({ label: 'Load Now', onclick: buttonLoad });
+            }
+            buttons.push({ label: 'Set as Refiner', onclick: buttonRefiner });
         }
         else if (this.subType == 'Embedding') {
             buttons = [
@@ -501,27 +567,31 @@ class ModelBrowserWrapper {
         let name = cleanModelName(model.data.name);
         let display = (model.data.display || name).replaceAll('/', ' / ');
         if (this.subType == 'Wildcards') {
-            buttons = [
-                { label: 'Edit Wildcard', onclick: () => editWildcard(model.data) },
-                { label: 'Test Wildcard', onclick: () => testWildcard(model.data) },
-                { label: 'Delete Wildcard', onclick: () => {
+            buttons = [];
+            if (permissions.hasPermission('edit_wildcards')) {
+                buttons.push({ label: 'Edit Wildcard', onclick: () => editWildcard(model.data) });
+            }
+            buttons.push({ label: 'Test Wildcard', onclick: () => testWildcard(model.data) });
+            if (permissions.hasPermission('edit_wildcards')) {
+                buttons.push({ label: 'Delete Wildcard', onclick: () => {
                     if (confirm("Are you sure want to delete that wildcard?")) {
                         genericRequest('DeleteWildcard', { card: model.data.name }, data => {
                             wildcardsBrowser.browser.refresh();
                         });
                     }
-                } }
-            ];
+                } });
+            }
             let raw = model.data.raw;
             if (raw.length > 512) {
                 raw = raw.substring(0, 512) + '...';
             }
+            detail_list.push(escapeHtml(raw).replaceAll('\n', '').replaceAll('<br>', ', '));
             description = `<span class="wildcard_title">${escapeHtml(name)}</span><br>${escapeHtml(raw)}`;
-            let match = matchWildcard(promptBox.value, model.data.name);
+            let match = matchWildcard(this.promptBox.value, model.data.name);
             let isSelected = match && match.length > 0;
             let className = isSelected ? 'model-selected' : '';
             let searchable = `${model.data.name}, ${description}`;
-            return { name, description, buttons, className, searchable, 'image': model.data.image, display };
+            return { name, description, buttons, className, searchable, 'image': model.data.image, display, detail_list };
         }
         let isCorrect = this.subType == 'Stable-Diffusion' || isModelArchCorrect(model.data);
         let interject = '';
@@ -538,16 +608,31 @@ class ModelBrowserWrapper {
                 interject += `<b>(This model is only available on some backends.)</b><br>`;
             }
             description = `<span class="model_filename">${escapeHtml(display)}</span><br>${getLine("Title", model.data.title)}${getOptLine("Author", model.data.author)}${getLine("Type", model.data.class)}${interject}${getOptLine('Trigger Phrase', model.data.trigger_phrase)}${getOptLine('Usage Hint', model.data.usage_hint)}${getLine("Description", model.data.description)}`;
-            if (model.data.local) {
+            let cleanForDetails = (val) => val == null ? '(Unset)' : safeHtmlOnly(val).replaceAll('<br>', '&emsp;');
+            detail_list.push(cleanForDetails(model.data.title), cleanForDetails(model.data.class), cleanForDetails(model.data.usage_hint ?? model.data.trigger_phrase), cleanForDetails(model.data.description));
+            if (model.data.local && permissions.hasPermission('edit_model_metadata')) {
                 buttons.push({ label: 'Edit Metadata', onclick: () => editModel(model.data, this) });
             }
-            if (model.data.local && this.subType == 'Stable-Diffusion' && !model.data.name.endsWith('.engine')) {
+            if (model.data.local && permissions.hasPermission('delete_models')) {
+                buttons.push({ label: 'Delete Model', onclick: () => deleteModel(model.data, this) });
+            }
+            if (model.data.local && permissions.hasPermission('delete_models')) {
+                buttons.push({ label: 'Rename Model', onclick: () => renameModel(model.data, this) });
+            }
+            if (model.data.local && this.subType == 'Stable-Diffusion' && !model.data.name.endsWith('.engine') && permissions.hasPermission('create_tensorrt')) {
                 buttons.push({ label: 'Create TensorRT Engine', onclick: () => showTrtMenu(model.data) });
             }
         }
         else {
             description = `${escapeHtml(name)}<br>(Metadata only available for 'safetensors' models.)<br><b>WARNING:</b> 'ckpt' pickle files can contain malicious code! Use with caution.<br>`;
+            detail_list.push(`(Metadata only available for 'safetensors' models.)`, `<b>WARNING:</b> 'ckpt' pickle files can contain malicious code! Use with caution.`);
         }
+        let className = this.getClassFor(model, isCorrect);
+        let searchable = `${model.data.name}, ${description}, ${model.data.license}, ${model.data.architecture||'no-arch'}, ${model.data.usage_hint}, ${model.data.trigger_phrase}, ${model.data.merged_from}, ${model.data.tags}`;
+        return { name, description, buttons, 'image': model.data.preview_image, className, searchable, display, detail_list };
+    }
+
+    isSelected(name) {
         let selector = 'current_model';
         switch (this.subType) {
             case 'Stable-Diffusion': selector = 'current_model'; break;
@@ -555,50 +640,101 @@ class ModelBrowserWrapper {
             case 'LoRA': selector = 'input_loras'; break;
             case 'ControlNet': selector = 'input_controlnetmodel'; break;
         }
-        let isSelected;
         let selectorElem = document.getElementById(selector);
-        let clean = cleanModelName(model.data.name);
+        let clean = cleanModelName(name);
+        let isSelected;
         if (!selectorElem) {
             isSelected = false;
         }
         else if (this.subType == 'VAE' && !document.getElementById('input_vae_toggle').checked) {
-            isSelected = model.data.name == 'Automatic';
+            isSelected = name == 'Automatic';
         }
         else if (this.subType == 'LoRA') {
             isSelected = [...selectorElem.selectedOptions].map(option => option.value).filter(value => value == clean).length > 0;
         }
         else if (this.subType == 'Embedding') {
-            isSelected = promptBox.value.includes(`<embed:${clean}>`);
+            isSelected = this.promptBox.value.includes(`<embed:${clean}>`);
             let negativePrompt = document.getElementById('input_negativeprompt');
             if (negativePrompt) {
                 isSelected = isSelected || negativePrompt.value.includes(`<embed:${clean}>`);
             }
         }
+        else if (this.subType == 'Wildcards') {
+            let match = matchWildcard(this.promptBox.value, name);
+            isSelected = match && match.length > 0;
+        }
         else {
             isSelected = selectorElem.value == clean;
         }
+        return isSelected;
+    }
+
+    getClassFor(model, isCorrect) {
+        let isSelected = this.isSelected(model.data.name);
         let className = isSelected ? 'model-selected' : (model.data.loaded ? 'model-loaded' : (!isCorrect ? 'model-unavailable' : ''));
         if (!model.data.local) {
             className += ' model-remote';
         }
-        let searchable = `${model.data.name}, ${description}, ${model.data.license}, ${model.data.architecture||'no-arch'}, ${model.data.usage_hint}, ${model.data.trigger_phrase}, ${model.data.merged_from}, ${model.data.tags}`;
-        return { name, description, buttons, 'image': model.data.preview_image, className, searchable, display };
+        return className;
+    }
+
+    rebuildSelectedClasses() {
+        if (this.willRebuildSelected || !this.browser.contentDiv) {
+            return;
+        }
+        this.willRebuildSelected = true;
+        setTimeout(() => {
+            this.willRebuildSelected = false;
+            for (let child of this.browser.contentDiv.children) {
+                if (child.dataset.name) {
+                    let hasSelectedClass = child.classList.contains('model-selected');
+                    let isSelected = this.isSelected(child.dataset.name);
+                    if (hasSelectedClass == isSelected) {
+                        continue;
+                    }
+                    if (isSelected) {
+                        child.classList.add('model-selected');
+                        child.classList.remove('model-loaded');
+                        child.classList.remove('model-unavailable');
+                    }
+                    else {
+                        child.classList.remove('model-selected');
+                        let model = this.models[child.dataset.name];
+                        if (!model) {
+                            continue;
+                        }
+                        if (this.subType != 'Wildcards') {
+                            if (model.data.loaded) {
+                                child.classList.add('model.loaded');
+                            }
+                            else {
+                                let isCorrect = this.subType == 'Stable-Diffusion' || isModelArchCorrect(model.data);
+                                if (!isCorrect) {
+                                    child.classList.add('model-unavailable');
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }, 1);
     }
 
     selectModel(model) {
         this.selectOne(model);
-        this.browser.planRerender(50);
+        this.rebuildSelectedClasses();
     }
 }
 
-let sdModelBrowser = new ModelBrowserWrapper('Stable-Diffusion', ['', 'inpaint', 'tensorrt'], 'model_list', 'modelbrowser', (model) => { directSetModel(model.data); });
+let sdModelBrowser = new ModelBrowserWrapper('Stable-Diffusion', ['', 'inpaint', 'tensorrt', 'depth', 'canny'], 'model_list', 'modelbrowser', (model) => { directSetModel(model.data); });
 let sdVAEBrowser = new ModelBrowserWrapper('VAE', ['vae'], 'vae_list', 'sdvaebrowser', (vae) => { directSetVae(vae.data); });
-let sdLoraBrowser = new ModelBrowserWrapper('LoRA', ['lora'], 'lora_list', 'sdlorabrowser', (lora) => { toggleSelectLora(cleanModelName(lora.data.name)); });
+let sdLoraBrowser = new ModelBrowserWrapper('LoRA', ['lora', 'lora-depth', 'lora-canny'], 'lora_list', 'sdlorabrowser', (lora) => { toggleSelectLora(cleanModelName(lora.data.name)); });
 let sdEmbedBrowser = new ModelBrowserWrapper('Embedding', ['embedding', 'textual-inversion'], 'embedding_list', 'sdembedbrowser', (embed) => { selectEmbedding(embed.data); });
 let sdControlnetBrowser = new ModelBrowserWrapper('ControlNet', ['controlnet', 'control-lora', 'controlnet-alimamainpaint'], 'controlnet_list', 'sdcontrolnetbrowser', (controlnet) => { setControlNet(controlnet.data); });
 let wildcardsBrowser = new ModelBrowserWrapper('Wildcards', [], 'wildcard_list', 'wildcardsbrowser', (wildcard) => { selectWildcard(wildcard.data); }, `<button id="wildcards_list_create_new_button" class="refresh-button" onclick="create_new_wildcard_button()">Create New Wildcard</button>`);
 
 let allModelBrowsers = [sdModelBrowser, sdVAEBrowser, sdLoraBrowser, sdEmbedBrowser, sdControlnetBrowser, wildcardsBrowser];
+let subModelBrowsers = [sdVAEBrowser, sdLoraBrowser, sdEmbedBrowser, sdControlnetBrowser];
 
 function matchWildcard(prompt, wildcard) {
     let matcher = new RegExp(`<(wildcard(?:\\[\\d+(?:-\\d+)?\\])?):${regexEscape(wildcard)}>`, 'g');
@@ -636,14 +772,14 @@ function embedClearFromPrompt(model, element) {
     let chunk = `<embed:${cleanModelName(model.name)}>`;
     box.value = box.value.replace(` ${chunk}`, '').replace(chunk, '').trim();
     triggerChangeFor(box);
-    sdEmbedBrowser.browser.planRerender(5);
+    sdEmbedBrowser.rebuildSelectedClasses();
 }
 
 function embedAddToPrompt(model, element) {
     let box = getRequiredElementById(element);
     box.value += ` <embed:${cleanModelName(model.name)}>`;
     triggerChangeFor(box);
-    sdEmbedBrowser.browser.planRerender(5);
+    sdEmbedBrowser.rebuildSelectedClasses();
 }
 
 function selectEmbedding(model) {
@@ -674,12 +810,12 @@ function monitorPromptChangeForEmbed(promptText, type) {
     let countNew = promptText.split(`<embed:`).length - 1;
     let countOld = last.split(`<embed:`).length - 1;
     if (countNew != countOld || (countNew > 0 && countEndsNew != countEndsOld)) {
-        sdEmbedBrowser.browser.planRerender(5);
+        sdEmbedBrowser.rebuildSelectedClasses();
     }
     let countNewWc = promptText.split(`<wildcard`).length - 1;
     let countOldWc = last.split(`<wildcard`).length - 1;
     if (countNewWc != countOldWc || (countNewWc > 0 && countEndsNew != countEndsOld)) {
-        wildcardsBrowser.browser.planRerender(5);
+        wildcardsBrowser.rebuildSelectedClasses();
     }
 }
 
@@ -767,7 +903,7 @@ function updateLoraList() {
         removeButton.addEventListener('click', () => {
             toggleSelectLora(lora);
             updateLoraList();
-            sdLoraBrowser.browser.planRerender(5);
+            sdLoraBrowser.rebuildSelectedClasses();
         });
         div.appendChild(weightInput);
         div.appendChild(removeButton);
@@ -846,8 +982,9 @@ function directSetModel(model) {
     if (aspect) {
         aspect.dispatchEvent(new Event('change'));
     }
-    for (let browser of allModelBrowsers) {
-        browser.browser.update();
+    sdModelBrowser.rebuildSelectedClasses();
+    for (let browser of subModelBrowsers) {
+        browser.browser.updateWithoutDup();
     }
 }
 
@@ -891,10 +1028,6 @@ function showTrtMenu(model) {
     }
     modelSelect.value = cleanModelName(model.name);
     $('#create_tensorrt_modal').modal('show');
-}
-
-function close_trt_modal() {
-    $('#create_tensorrt_modal').modal('hide');
 }
 
 function trt_modal_create() {
@@ -952,6 +1085,14 @@ function doModelInstallRequiredCheck() {
     }
     if (curModelSpecialFormat == 'gguf' && !currentBackendFeatureSet.includes('gguf') && !localStorage.getItem('hide_gguf_check')) {
         $('#gguf_installer').modal('show');
+        return true;
+    }
+    if (curModelCompatClass == 'pixart-ms-sigma-xl-2' && !currentBackendFeatureSet.includes('extramodelspixart') && !localStorage.getItem('hide_extramodels_check')) {
+        $('#extramodels_installer').modal('show');
+        return true;
+    }
+    if (curModelCompatClass == 'nvidia-sana-1600' && !currentBackendFeatureSet.includes('extramodelssana') && !localStorage.getItem('hide_extramodels_check')) {
+        $('#extramodels_installer').modal('show');
         return true;
     }
     return false;

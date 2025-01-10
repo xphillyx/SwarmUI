@@ -13,6 +13,10 @@ function enableSlidersIn(elem) {
     }
 }
 
+function enableSliderAbove(div) {
+    enableSliderForBox(findParentOfClass(div, 'auto-slider-box'));
+}
+
 function enableSliderForBox(div) {
     let range = div.querySelector('input[type="range"]');
     let number = div.querySelector('input[type="number"]');
@@ -129,6 +133,7 @@ function makeWSRequest(url, in_data, callback, depth = 0, errorHandle = null, on
         callback(data);
     }
     socket.onerror = errorHandle ? () => errorHandle(genericServerErrorMsg.get()) : genericServerError;
+    return socket;
 }
 
 let failedCrash = translatable(`Failed to send request to server. Did the server crash?`);
@@ -200,6 +205,7 @@ function getSession(callback) {
         setCookie('session_id', session_id, 31);
         user_id = data.user_id;
         outputAppendUser = data.output_append_user;
+        permissions.updateFrom(data.permissions);
         if (lastServerVersion == null) {
             lastServerVersion = data.version;
         }
@@ -396,10 +402,15 @@ function getToggleHtml(toggles, id, name, extraClass = '', func = 'doToggleEnabl
     return toggles ? `<span class="form-check form-switch toggle-switch display-inline-block${extraClass}"><input class="auto-slider-toggle form-check-input" type="checkbox" id="${id}_toggle" title="Enable/disable ${name}" onclick="${func}('${id}')" onchange="${func}('${id}')" autocomplete="false"><div class="auto-slider-toggle-content"></div></span>` : '';
 }
 
-function load_image_file(e) {
-    updateFileDragging({ target: e }, true);
-    let file = e.files[0];
-    let parent = e.closest('.auto-input');
+let loadImageFileDedup = false;
+
+function load_image_file(elem) {
+    if (loadImageFileDedup) {
+        return;
+    }
+    updateFileDragging({ target: elem }, true);
+    let file = elem.files[0];
+    let parent = elem.closest('.auto-input');
     let preview = parent.querySelector('.auto-input-image-preview');
     let label = parent.querySelector('.auto-file-input-filename');
     if (file) {
@@ -410,24 +421,30 @@ function load_image_file(e) {
         label.textContent = name;
         let reader = new FileReader();
         reader.addEventListener("load", () => {
-            e.dataset.filedata = reader.result;
+            elem.dataset.filedata = reader.result;
             preview.innerHTML = `<button class="interrupt-button auto-input-image-remove-button" title="Remove image">&times;</button><img alt="Image preview" />`;
             let img = preview.querySelector('img');
             img.onload = () => {
                 label.textContent = `${name} (${img.naturalWidth}x${img.naturalHeight}, ${describeAspectRatio(img.naturalWidth, img.naturalHeight)})`;
+                elem.dataset.width = img.naturalWidth;
+                elem.dataset.height = img.naturalHeight;
+                loadImageFileDedup = true;
+                triggerChangeFor(elem);
+                loadImageFileDedup = false;
             };
             img.src = reader.result;
             preview.firstChild.addEventListener('click', () => {
-                delete e.dataset.filedata;
+                delete elem.dataset.filedata;
                 label.textContent = "";
                 preview.innerHTML = '';
-                e.value = '';
+                elem.value = '';
+                triggerChangeFor(elem);
             });
         }, false);
         reader.readAsDataURL(file);
     }
     else {
-        delete e.dataset.filedata;
+        delete elem.dataset.filedata;
         label.textContent = "";
         preview.innerHTML = '';
     }
@@ -590,10 +607,19 @@ function makeSecretInput(featureid, id, paramid, name, description, value, place
     </div>`;
 }
 
+function dynamicSizeTextBox(elem, min=15) {
+    let maxHeight = parseInt(getUserSetting('maxpromptlines', '10'));
+    elem.style.height = 'auto';
+    elem.style.height = `calc(min(${maxHeight}rem, ${Math.max(elem.scrollHeight, min) + 5}px))`;
+}
+
 function makeTextInput(featureid, id, paramid, name, description, value, format, placeholder, toggles = false, genPopover = false, popover_button = true) {
+    if (format == 'secret') {
+        return makeSecretInput(featureid, id, paramid, name, description, value, placeholder, toggles, genPopover, popover_button);
+    }
     name = escapeHtml(name);
     featureid = featureid ? ` data-feature-require="${featureid}"` : '';
-    let onInp = format == "prompt" ? ' oninput="textPromptInputHandle(this)"' : '';
+    let onInp = format == "prompt" ? ' oninput="textPromptInputHandle(this)"' : (format == 'big' ? ' oninput="dynamicSizeTextBox(this, 32)"' : '');
     let tokenCounter = format == "prompt" ? '<span class="auto-input-prompt-tokencount" title="Text-Encoder token count / chunk-size">0/75</span>' : '';
     let [popover, featureid2] = getPopoverElemsFor(id, popover_button);
     featureid += featureid2;
@@ -701,11 +727,11 @@ function makeImageInput(featureid, id, paramid, name, description, toggles = fal
     featureid += featureid2;
     let html = `
     <div class="auto-input auto-file-box"${featureid}>
-        <label>
+        <label class="auto-image-input-label">
             <span class="auto-input-name">${getToggleHtml(toggles, id, name)}${translateableHtml(name)}${popover}</span>
             <input type="text" id="${id}_pastebox" size="14" maxlength="0" placeholder="Ctrl+V: Paste Image" onpaste="onImageInputPaste(arguments[0])">
         </label>
-        <label for="${id}" class="auto-file-label">
+        <label for="${id}" class="auto-file-label drag_image_target">
             <input class="auto-file" type="file" accept="image/png, image/jpeg" id="${id}" data-param_id="${paramid}" onchange="load_image_file(this)" ondragover="updateFileDragging(arguments[0], false)" ondragleave="updateFileDragging(arguments[0], true)" autocomplete="false">
             <div class="auto-file-input">
                 <a class="auto-file-input-button basic-button">${translateableHtml("Choose File")}</a>
@@ -784,19 +810,7 @@ window.addEventListener('drop', e => {
 }, { capture: true, passive: false });
 
 function updateFileDragging(e, out) {
-    let files = [];
-    if (e.dataTransfer && !out) {
-        files = e.dataTransfer.files;
-        if (!files || !files.length) {
-            files = [...e.dataTransfer.items || []].filter(item => item.kind == "file");
-        }
-        if (!files.length) {
-            let uris = e.dataTransfer.getData('text/uri-list');
-            if (uris) {
-                files = uris.split('\n');
-            }
-        }
-    }
+    let files = out ? [] : uiImprover.getFileList(e.dataTransfer);
     const el = e.target.nextElementSibling;
     const mode = files.length ? "add" : "remove";
     el.classList[mode]("auto-file-input-file-drag");
@@ -850,4 +864,12 @@ function modalHeader(id, title) {
 
 function modalFooter() {
     return `</div></div></div>`;
+}
+
+let specialDebugTime = Date.now();
+function specialDebug(message) {
+    let now = Date.now();
+    let diff = now - specialDebugTime;
+    specialDebugTime = now;
+    console.log(`${message} (${diff}ms since last debug)`);
 }

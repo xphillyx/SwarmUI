@@ -186,20 +186,20 @@ public class T2IParamInput
     public static Dictionary<string, Func<string, PromptTagContext, string>> PromptTagPostProcessors = [];
 
     /// <summary>Mapping of prompt tag prefixes, to strings intended to allow for estimating token count.</summary>
-    public static Dictionary<string, Func<string, string>> PromptTagLengthEstimators = [];
+    public static Dictionary<string, Func<string, PromptTagContext, string>> PromptTagLengthEstimators = [];
 
     /// <summary>Interprets a random number range input by a user, if the input is a number range.</summary>
-    public static bool TryInterpretNumberRange(string inputVal, out string number)
+    public static bool TryInterpretNumberRange(string inputVal, PromptTagContext context, out string number)
     {
         (string preDash, string postDash) = inputVal.BeforeAndAfter('-');
         if (long.TryParse(preDash.Trim(), out long int1) && long.TryParse(postDash.Trim(), out long int2))
         {
-            number = $"{Random.Shared.NextInt64(int1, int2 + 1)}";
+            number = $"{context.Input.GetWildcardRandom().NextInt64(int1, int2 + 1)}";
             return true;
         }
         if (double.TryParse(preDash.Trim(), out double num1) && double.TryParse(postDash.Trim(), out double num2))
         {
-            number = $"{Random.Shared.NextDouble() * (num2 - num1) + num1}";
+            number = $"{context.Input.GetWildcardRandom().NextDouble() * (num2 - num1) + num1}";
             return true;
         }
         number = null;
@@ -207,9 +207,9 @@ public class T2IParamInput
     }
 
     /// <summary>Interprets a number input by a user, or returns null if unable to.</summary>
-    public static double? InterpretNumber(string inputVal)
+    public static double? InterpretNumber(string inputVal, PromptTagContext context)
     {
-        if (TryInterpretNumberRange(inputVal, out string number))
+        if (TryInterpretNumberRange(inputVal, context, out string number))
         {
             inputVal = number;
         }
@@ -220,7 +220,7 @@ public class T2IParamInput
         return null;
     }
 
-    public static (int, string) InterpretPredataForRandom(string prefix, string preData, string data)
+    public static (int, string) InterpretPredataForRandom(string prefix, string preData, string data, PromptTagContext context)
     {
         int count = 1;
         string separator = " ";
@@ -231,7 +231,7 @@ public class T2IParamInput
                 separator = ", ";
                 preData = preData[0..^1];
             }
-            double? countVal = InterpretNumber(preData);
+            double? countVal = InterpretNumber(preData, context);
             if (!countVal.HasValue)
             {
                 Logs.Warning($"Random input '{prefix}[{preData}]:{data}' has invalid predata count (not a number) and will be ignored.");
@@ -246,7 +246,7 @@ public class T2IParamInput
     {
         PromptTagProcessors["random"] = (data, context) =>
         {
-            (int count, string partSeparator) = InterpretPredataForRandom("random", context.PreData, data);
+            (int count, string partSeparator) = InterpretPredataForRandom("random", context.PreData, data, context);
             if (partSeparator is null)
             {
                 return null;
@@ -263,7 +263,7 @@ public class T2IParamInput
             {
                 int index = context.Input.GetWildcardRandom().Next(vals.Count);
                 string choice = vals[index];
-                if (TryInterpretNumberRange(choice, out string number))
+                if (TryInterpretNumberRange(choice, context, out string number))
                 {
                     return number;
                 }
@@ -279,7 +279,7 @@ public class T2IParamInput
             }
             return result.Trim();
         };
-        PromptTagLengthEstimators["random"] = (data) =>
+        PromptTagLengthEstimators["random"] = (data, context) =>
         {
             string[] rawVals = SplitSmart(data);
             int longest = 0;
@@ -314,7 +314,7 @@ public class T2IParamInput
         PromptTagLengthEstimators["alt"] = PromptTagLengthEstimators["alternate"];
         PromptTagProcessors["fromto"] = (data, context) =>
         {
-            double? stepIndex = InterpretNumber(context.PreData);
+            double? stepIndex = InterpretNumber(context.PreData, context);
             if (!stepIndex.HasValue)
             {
                 context.TrackWarning($"FromTo input 'fromto[{context.PreData}]:{data}' has invalid predata step-index (not a number) and will be ignored.");
@@ -335,7 +335,7 @@ public class T2IParamInput
         PromptTagLengthEstimators["fromto"] = PromptTagLengthEstimators["random"];
         PromptTagProcessors["wildcard"] = (data, context) =>
         {
-            (int count, string partSeparator) = InterpretPredataForRandom("random", context.PreData, data);
+            (int count, string partSeparator) = InterpretPredataForRandom("random", context.PreData, data, context);
             if (partSeparator is null)
             {
                 return null;
@@ -368,7 +368,7 @@ public class T2IParamInput
             return result.Trim();
         };
         PromptTagProcessors["wc"] = PromptTagProcessors["wildcard"];
-        PromptTagLengthEstimators["wildcard"] = (data) =>
+        PromptTagLengthEstimators["wildcard"] = (data, context) =>
         {
             string card = T2IParamTypes.GetBestInList(data, WildcardsHelper.ListFiles);
             if (card is null)
@@ -392,8 +392,17 @@ public class T2IParamInput
         PromptTagLengthEstimators["wc"] = PromptTagLengthEstimators["wildcard"];
         PromptTagProcessors["repeat"] = (data, context) =>
         {
-            (string count, string value) = data.BeforeAndAfter(',');
-            double? countVal = InterpretNumber(count);
+            string count, value;
+            if (!string.IsNullOrWhiteSpace(context.PreData))
+            {
+                count = context.PreData;
+                value = data;
+            }
+            else
+            {
+                (count, value) = data.BeforeAndAfter(',');
+            }
+            double? countVal = InterpretNumber(count, context);
             if (!countVal.HasValue)
             {
                 context.TrackWarning($"Repeat input '{data}' has invalid count (not a number) and will be ignored.");
@@ -406,10 +415,19 @@ public class T2IParamInput
             }
             return result.Trim();
         };
-        PromptTagLengthEstimators["repeat"] = (data) =>
+        PromptTagLengthEstimators["repeat"] = (data, context) =>
         {
-            (string count, string value) = data.BeforeAndAfter(',');
-            double? countVal = InterpretNumber(count);
+            string count, value;
+            if (!string.IsNullOrWhiteSpace(context.PreData))
+            {
+                count = context.PreData;
+                value = data;
+            }
+            else
+            {
+                (count, value) = data.BeforeAndAfter(',');
+            }
+            double? countVal = InterpretNumber(count, context);
             if (!countVal.HasValue)
             {
                 return "";
@@ -440,7 +458,7 @@ public class T2IParamInput
             return "";
         };
         PromptTagProcessors["p"] = PromptTagProcessors["preset"];
-        static string estimateEmpty(string data)
+        static string estimateEmpty(string data, PromptTagContext context)
         {
             return "";
         }
@@ -456,6 +474,11 @@ public class T2IParamInput
             {
                 context.TrackWarning($"Embedding '{want}' does not exist and will be ignored.");
                 return "";
+            }
+            T2IModel embedModel = Program.T2IModelSets["Embedding"].GetModel(matched);
+            if (embedModel is not null && Program.ServerSettings.Metadata.ImageMetadataIncludeModelHash)
+            {
+                embedModel.GetOrGenerateTensorHashSha256(); // Ensure hash is preloaded
             }
             if (matched.Contains(' '))
             {
@@ -486,6 +509,11 @@ public class T2IParamInput
                 context.TrackWarning($"Lora '{lora}' does not exist and will be ignored.");
                 return null;
             }
+            T2IModel loraModel = Program.T2IModelSets["LoRA"].GetModel(matched);
+            if (loraModel is not null && Program.ServerSettings.Metadata.ImageMetadataIncludeModelHash)
+            {
+                loraModel.GetOrGenerateTensorHashSha256(); // Ensure hash is preloaded
+            }
             List<string> loraList = context.Input.Get(T2IParamTypes.Loras) ?? [];
             List<string> weights = context.Input.Get(T2IParamTypes.LoraWeights) ?? [];
             List<string> confinements = context.Input.Get(T2IParamTypes.LoraSectionConfinement);
@@ -498,7 +526,7 @@ public class T2IParamInput
             weights.Add(strength.ToString());
             context.Input.Set(T2IParamTypes.Loras, loraList);
             context.Input.Set(T2IParamTypes.LoraWeights, weights);
-            string trigger = Program.T2IModelSets["LoRA"].GetModel(matched)?.Metadata?.TriggerPhrase;
+            string trigger = loraModel?.Metadata?.TriggerPhrase;
             if (!string.IsNullOrWhiteSpace(trigger))
             {
                 context.TriggerPhraseExtra += $"{trigger}, ";
@@ -529,7 +557,7 @@ public class T2IParamInput
         {
             return "<break>";
         };
-        PromptTagLengthEstimators["break"] = (data) =>
+        PromptTagLengthEstimators["break"] = (data, context) =>
         {
             return "<break>";
         };
@@ -548,7 +576,7 @@ public class T2IParamInput
             context.Variables[name] = data;
             return data;
         };
-        PromptTagLengthEstimators["setvar"] = (data) =>
+        PromptTagLengthEstimators["setvar"] = (data, context) =>
         {
             return ProcessPromptLikeForLength(data);
         };
@@ -623,7 +651,6 @@ public class T2IParamInput
     {
         SourceSession = session;
         InterruptToken = session is null ? new CancellationTokenSource().Token : session.SessInterrupt.Token;
-        ExtraMeta["swarm_version"] = Utilities.Version;
         ExtraMeta["date"] = DateTime.Now.ToString("yyyy-MM-dd");
     }
 
@@ -709,25 +736,34 @@ public class T2IParamInput
         return result;
     }
 
-    /// <summary>Generates a metadata JSON object for this input and the given set of extra parameters.</summary>
-    public JObject GenMetadataObject()
+    public static JToken MetadatableToJTok(object val)
+    {
+        if (val is Image)
+        {
+            return null;
+        }
+        if (val is string str)
+        {
+            val = FillEmbedsInString(str, e => $"<embed:{e}>");
+        }
+        if (val is T2IModel model)
+        {
+            val = T2IParamTypes.CleanModelName(model.Name);
+        }
+        return JToken.FromObject(val);
+    }
+
+    /// <summary>Generates a metadata JSON object for this input's parameters.</summary>
+    public JObject GenParameterMetadata()
     {
         JObject output = [];
-        foreach ((string key, object origVal) in ValuesInput.Union(ExtraMeta))
+        foreach ((string key, object origVal) in ValuesInput)
         {
             object val = origVal;
             if (val is null)
             {
                 Logs.Warning($"Null parameter {key} in T2I parameters?");
-                continue;
-            }
-            if (val is Image)
-            {
-                continue;
-            }
-            if (val is string str)
-            {
-                val = FillEmbedsInString(str, e => $"<embed:{e}>");
+                return null;
             }
             if (T2IParamTypes.TryGetType(key, out T2IParamType type, this))
             {
@@ -740,11 +776,11 @@ public class T2IParamInput
                     val = type.MetadataFormat($"{val}");
                 }
             }
-            if (val is T2IModel model)
+            JToken token = MetadatableToJTok(val);
+            if (token is not null)
             {
-                val = T2IParamTypes.CleanModelName(model.Name);
+                output[key] = token;
             }
-            output[key] = JToken.FromObject(val);
         }
         if (output.TryGetValue("original_prompt", out JToken origPrompt) && output.TryGetValue("prompt", out JToken prompt) && origPrompt == prompt)
         {
@@ -757,20 +793,99 @@ public class T2IParamInput
         return output;
     }
 
-    /// <summary>Aggressively safe JSON Serializer Settings for metadata encoding.</summary>
-    public static JsonSerializerSettings SafeSerializer = new() { Formatting = Formatting.Indented, StringEscapeHandling = StringEscapeHandling.EscapeNonAscii };
+    /// <summary>Keys for <see cref="ExtraMeta"/> that identify lists of extra models to track, as a pair of (key, model-sub-type).</summary>
+    public static List<(string, string)> ModelListExtraKeys = [("used_embeddings", "Embedding"), ("loras", "LoRA")];
+
+    /// <summary>Generates a metadata JSON object for this input's data.</summary>
+    public JObject GenFullMetadataObject()
+    {
+        JObject paramData = GenParameterMetadata();
+        paramData["swarm_version"] = Utilities.Version;
+        JObject final = new() { ["sui_image_params"] = paramData };
+        JObject extraData = [];
+        foreach ((string key, object val) in ExtraMeta)
+        {
+            JToken token = MetadatableToJTok(val);
+            if (token is not null)
+            {
+                extraData[key] = token;
+            }
+        }
+        if (extraData.Count > 0)
+        {
+            final["sui_extra_data"] = extraData;
+        }
+        if (Program.ServerSettings.Metadata.ImageMetadataIncludeModelHash)
+        {
+            JArray models = [];
+            void addModel(T2IModel model, string param)
+            {
+                if (model is null)
+                {
+                    Logs.Debug($"Model param '{param}' is null, will not list in sui_models metadata");
+                    return;
+                }
+                models.Add(new JObject()
+                {
+                    ["name"] = model.Name,
+                    ["param"] = param,
+                    ["hash"] = model.GetOrGenerateTensorHashSha256()
+                });
+            }
+            void addModelsFor(string key, object val)
+            {
+                if (val is T2IModel model)
+                {
+                    addModel(model, key);
+                }
+                else if (val is List<T2IModel> modelList)
+                {
+                    foreach (T2IModel m in modelList)
+                    {
+                        addModel(m, key);
+                    }
+                }
+            }
+            foreach ((string key, object val) in ValuesInput)
+            {
+                addModelsFor(key, val);
+            }
+            foreach ((string modelListKey, string subType) in ModelListExtraKeys)
+            {
+                if (ExtraMeta.TryGetValue(modelListKey, out object val) || ValuesInput.TryGetValue(modelListKey, out val))
+                {
+                    addModelsFor(modelListKey, val);
+                    if (val is List<string> strlist)
+                    {
+                        foreach (string str in strlist)
+                        {
+                            T2IModel model = Program.T2IModelSets[subType].GetModel(str);
+                            addModel(model, modelListKey);
+                        }
+                    }
+                }
+            }
+            if (models.Count > 0)
+            {
+                final["sui_models"] = models;
+            }
+        }
+        return final;
+    }
 
     /// <summary>Generates a metadata JSON object for this input and creates a proper string form of it, fit for inclusion in an image.</summary>
     public string GenRawMetadata()
     {
-        JObject obj = GenMetadataObject();
-        return MetadataToString(obj);
+        return MetadataToString(GenFullMetadataObject());
     }
+
+    /// <summary>Aggressively safe JSON Serializer Settings for metadata encoding.</summary>
+    public static JsonSerializerSettings SafeSerializer = new() { Formatting = Formatting.Indented, StringEscapeHandling = StringEscapeHandling.EscapeNonAscii };
 
     /// <summary>Converts a metadata JSON object to a string.</summary>
     public static string MetadataToString(JObject obj)
     {
-        return JsonConvert.SerializeObject(new JObject() { ["sui_image_params"] = obj }, SafeSerializer).Replace("\r\n", "\n");
+        return JsonConvert.SerializeObject(obj, SafeSerializer).Replace("\r\n", "\n");
     }
 
     /// <summary>Special utility to process prompt inputs before the request is executed (to parse wildcards, embeddings, etc).</summary>
@@ -914,7 +1029,8 @@ public class T2IParamInput
         {
             return null;
         }
-        void processSet(Dictionary<string, Func<string, string>> set)
+        PromptTagContext context = new();
+        void processSet(Dictionary<string, Func<string, PromptTagContext, string>> set)
         {
             val = StringConversionHelper.QuickSimpleTagFiller(val, "<", ">", tag =>
             {
@@ -924,9 +1040,10 @@ public class T2IParamInput
                 {
                     (prefix, preData) = prefix.BeforeLast(']').BeforeAndAfter('[');
                 }
-                if (set.TryGetValue(prefix, out Func<string, string> proc))
+                context.PreData = preData;
+                if (set.TryGetValue(prefix, out Func<string, PromptTagContext, string> proc))
                 {
-                    string result = proc(data);
+                    string result = proc(data, context);
                     if (result is not null)
                     {
                         return result;
@@ -1028,6 +1145,10 @@ public class T2IParamInput
                 return null;
             }
             model.AutoWarn();
+            if (Program.ServerSettings.Metadata.ImageMetadataIncludeModelHash)
+            {
+                model.GetOrGenerateTensorHashSha256(); // Ensure hash is preloaded early
+            }
             return model;
         }
         if (param.IgnoreIf is not null && param.IgnoreIf == val)
@@ -1057,7 +1178,11 @@ public class T2IParamInput
         }
         if (obj is null)
         {
-            Logs.Debug($"Ignoring input to parameter {param.ID} because the value maps to null.");
+            Logs.Debug($"Ignoring input to parameter '{param.ID}' of '{val}' because the value maps to null.");
+            if (param.ID == "model")
+            {
+                Logs.Warning($"Model input '{val}' appears to be null.");
+            }
             return;
         }
         ValuesInput[param.ID] = obj;

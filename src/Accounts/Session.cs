@@ -171,6 +171,9 @@ public class Session : IEquatable<Session>
         return image.AsDataString();
     }
 
+    /// <summary>Special cache of recently deleted images, to prevent generating new images with exact same filenames.</summary>
+    public static ConcurrentDictionary<string, string> RecentlyDeletedFilenames = [];
+
     /// <summary>Save an image as this user, and returns the new URL. If user has disabled saving, returns a data URL.</summary>
     /// <returns>(User-Visible-WebPath, Local-FilePath)</returns>
     public (string, string) SaveImage(Image image, int batchIndex, T2IParamInput user_input, string metadata)
@@ -196,23 +199,35 @@ public class Session : IEquatable<Session>
             Logs.Verbose($"Image is type {image.Type} and will save with extension '{image.Extension}'.");
             extension = image.Extension;
         }
-        string fullPath = $"{User.OutputDirectory}/{imagePath}.{extension}";
+        string fullPath = Path.GetFullPath($"{User.OutputDirectory}/{imagePath}.{extension}");
         lock (User.UserLock)
         {
             try
             {
                 int num = 0;
-                while (File.Exists(fullPath))
+                while (RecentlyDeletedFilenames.ContainsKey(fullPath) || File.Exists(fullPath))
                 {
                     num++;
                     imagePath = rawImagePath.Contains("[number]") ? rawImagePath.Replace("[number]", $"{num}") : $"{rawImagePath}-{num}";
-                    fullPath = $"{User.OutputDirectory}/{imagePath}.{extension}";
+                    fullPath = Path.GetFullPath($"{User.OutputDirectory}/{imagePath}.{extension}");
                 }
                 Directory.CreateDirectory(Directory.GetParent(fullPath).FullName);
                 File.WriteAllBytes(fullPath, image.ImageData);
                 if (User.Settings.FileFormat.SaveTextFileMetadata && !string.IsNullOrWhiteSpace(metadata))
                 {
                     File.WriteAllBytes(fullPath.BeforeLast('.') + ".txt", metadata.EncodeUTF8());
+                }
+                if (!ImageMetadataTracker.ExtensionsWithMetadata.Contains(extension) && !string.IsNullOrWhiteSpace(metadata))
+                {
+                    File.WriteAllBytes(fullPath.BeforeLast('.') + ".swarm.json", metadata.EncodeUTF8());
+                }
+                if (ImageMetadataTracker.ExtensionsForFfmpegables.Contains(extension) && !string.IsNullOrWhiteSpace(Utilities.FfmegLocation.Value))
+                {
+                    Utilities.QuickRunProcess(Utilities.FfmegLocation.Value, ["-i", fullPath, "-vf", "select=eq(n\\,0)", "-q:v", "3", fullPath.BeforeLast('.') + ".swarmpreview.jpg"]).Wait();
+                    if (Program.ServerSettings.UI.AllowAnimatedPreviews)
+                    {
+                        Utilities.QuickRunProcess(Utilities.FfmegLocation.Value, ["-i", fullPath, "-vcodec", "libwebp", "-filter:v", "fps=fps=6,scale=-1:128", "-lossless", "0", "-compression_level", "2", "-q:v", "60", "-loop", "0", "-preset", "picture", "-an", "-vsync", "0", "-t", "5", fullPath.BeforeLast('.') + ".swarmpreview.webp"]).Wait();
+                    }
                 }
             }
             catch (Exception e1)
@@ -259,5 +274,9 @@ public class Session : IEquatable<Session>
     {
         SessInterrupt.Cancel();
         SessInterrupt = new();
+    }
+
+    public void Remove()
+    {
     }
 }

@@ -5,6 +5,7 @@ using SwarmUI.Core;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
 using System.IO;
+using System.Runtime.InteropServices;
 
 namespace SwarmUI.Builtin_ComfyUIBackend;
 
@@ -88,6 +89,9 @@ public class WorkflowGenerator
     /// <summary>What model currently matches <see cref="FinalModel"/>.</summary>
     public T2IModel FinalLoadedModel;
 
+    /// <summary>What models currently match <see cref="FinalModel"/> (including eg loras).</summary>
+    public List<T2IModel> FinalLoadedModelList = [];
+
     /// <summary>Mapping of any extra nodes to keep track of, Name->ID, eg "MyNode" -> "15".</summary>
     public Dictionary<string, string> NodeHelpers = [];
 
@@ -112,8 +116,8 @@ public class WorkflowGenerator
     /// <summary>If true, Differential Diffusion node has been attached to the current model.</summary>
     public bool IsDifferentialDiffusion = false;
 
-    /// <summary>Outputs of <see cref="CreateImageMaskCrop(JArray, JArray, int)"/> if used for the main image.</summary>
-    public (string, string, string) MaskShrunkInfo = (null, null, null);
+    /// <summary>Outputs of <see cref="CreateImageMaskCrop(JArray, JArray, int, JArray, T2IModel, double, double)"/> if used for the main image.</summary>
+    public ImageMaskCropData MaskShrunkInfo = new(null, null, null, null);
 
     /// <summary>Gets the current loaded model class.</summary>
     public T2IModelClass CurrentModelClass()
@@ -139,7 +143,29 @@ public class WorkflowGenerator
     public bool IsSD3()
     {
         string clazz = CurrentCompatClass();
-        return clazz is not null && clazz == "stable-diffusion-v3-medium";
+        if (clazz is null)
+        {
+            return false;
+        }
+        return clazz.StartsWith("stable-diffusion-v3");
+    }
+
+    /// <summary>Returns true if the current model is Mochi Text2Video.</summary>
+    public bool IsMochi()
+    {
+        string clazz = CurrentCompatClass();
+        if (clazz is null)
+        {
+            return false;
+        }
+        return clazz is not null && clazz == "genmo-mochi-1";
+    }
+
+    /// <summary>Returns true if the current model is Lightricks LTX Video.</summary>
+    public bool IsLTXV()
+    {
+        string clazz = CurrentCompatClass();
+        return clazz is not null && clazz == "lightricks-ltx-video";
     }
 
     /// <summary>Returns true if the current model is Black Forest Labs' Flux.1.</summary>
@@ -147,6 +173,32 @@ public class WorkflowGenerator
     {
         string clazz = CurrentCompatClass();
         return clazz is not null && clazz == "flux-1";
+    }
+
+    /// <summary>Returns true if the current model supports Flux Guidance.</summary>
+    public bool HasFluxGuidance()
+    {
+        return IsFlux() || IsHunyuanVideo();
+    }
+
+    /// <summary>Returns true if the current model is NVIDIA Sana.</summary>
+    public bool IsSana()
+    {
+        string clazz = CurrentCompatClass();
+        return clazz is not null && clazz == "nvidia-sana-1600";
+    }
+
+    /// <summary>Returns true if the current model is Hunyuan Video.</summary>
+    public bool IsHunyuanVideo()
+    {
+        string clazz = CurrentCompatClass();
+        return clazz is not null && clazz == "hunyuan-video";
+    }
+
+    /// <summary>Returns true if the current main text input model model is a Video model (as opposed to image).</summary>
+    public bool IsVideoModel()
+    {
+        return IsLTXV() || IsMochi() || IsHunyuanVideo();
     }
 
     /// <summary>Gets a dynamic ID within a semi-stable registration set.</summary>
@@ -178,7 +230,7 @@ public class WorkflowGenerator
     }
 
     /// <summary>Helper to download a core model file required by the workflow.</summary>
-    public void DownloadModel(string name, string filePath, string url)
+    public void DownloadModel(string name, string filePath, string url, string hash)
     {
         if (File.Exists(filePath))
         {
@@ -190,12 +242,16 @@ public class WorkflowGenerator
             {
                 return;
             }
-            Directory.CreateDirectory(Path.GetDirectoryName(filePath));
             Logs.Info($"Downloading {name} to {filePath}...");
             double nextPerc = 0.05;
+            string tmpPath = $"{filePath}.tmp";
             try
             {
-                Utilities.DownloadFile(url, filePath, (bytes, total, perSec) =>
+                if (File.Exists(tmpPath))
+                {
+                    File.Delete(tmpPath);
+                }
+                Utilities.DownloadFile(url, tmpPath, (bytes, total, perSec) =>
                 {
                     double perc = bytes / (double)total;
                     if (perc >= nextPerc)
@@ -204,12 +260,13 @@ public class WorkflowGenerator
                         // TODO: Send a signal back so a progress bar can be displayed on a UI
                         nextPerc = Math.Round(perc / 0.05) * 0.05 + 0.05;
                     }
-                }).Wait();
+                }, verifyHash: hash).Wait();
+                File.Move(tmpPath, filePath);
             }
             catch (Exception ex)
             {
                 Logs.Error($"Failed to download {name} from {url}: {ex.Message}");
-                File.Delete(filePath);
+                File.Delete(tmpPath);
                 throw new SwarmReadableErrorException("Required model download failed.");
             }
             Logs.Info($"Downloading complete, continuing.");
@@ -238,6 +295,11 @@ public class WorkflowGenerator
                 {
                     throw new SwarmUserErrorException($"LoRA Model '{loras[i]}' not found in the model set.");
                 }
+            }
+            FinalLoadedModelList.Add(lora);
+            if (Program.ServerSettings.Metadata.ImageMetadataIncludeModelHash)
+            {
+                lora.GetOrGenerateTensorHashSha256(); // Ensure hash is preloaded early
             }
             if (confinements is not null && confinements.Count > i)
             {
@@ -288,6 +350,9 @@ public class WorkflowGenerator
         return result;
     }
 
+    /// <summary>For <see cref="CreateImageMaskCrop(JArray, JArray, int, JArray, T2IModel, double, double)"/>.</summary>
+    public record class ImageMaskCropData(string BoundsNode, string CroppedMask, string MaskedLatent, string ScaledImage);
+
     /// <summary>Creates an automatic image mask-crop before sampling, to be followed by <see cref="RecompositeCropped(string, string, JArray, JArray)"/> after sampling.</summary>
     /// <param name="mask">The mask node input.</param>
     /// <param name="image">The image node input.</param>
@@ -296,8 +361,8 @@ public class WorkflowGenerator
     /// <param name="model">The model in use, for determining resolution.</param>
     /// <param name="threshold">Optional minimum value threshold.</param>
     /// <param name="thresholdMax">Optional maximum value of the threshold.</param>
-    /// <returns>(boundsNode, croppedMask, maskedLatent).</returns>
-    public (string, string, string) CreateImageMaskCrop(JArray mask, JArray image, int growBy, JArray vae, T2IModel model, double threshold = 0.01, double thresholdMax = 1)
+    /// <returns>(boundsNode, croppedMask, maskedLatent, scaledImage).</returns>
+    public ImageMaskCropData CreateImageMaskCrop(JArray mask, JArray image, int growBy, JArray vae, T2IModel model, double threshold = 0.01, double thresholdMax = 1)
     {
         if (threshold > 0)
         {
@@ -337,13 +402,8 @@ public class WorkflowGenerator
             ["height"] = model?.StandardHeight <= 0 ? UserInput.GetImageHeight() : model.StandardHeight,
             ["can_shrink"] = true
         });
-        string vaeEncoded = CreateVAEEncode(vae, [scaledImage, 0], null, true);
-        string masked = CreateNode("SetLatentNoiseMask", new JObject()
-        {
-            ["samples"] = new JArray() { vaeEncoded, 0 },
-            ["mask"] = new JArray() { croppedMask, 0 }
-        });
-        return (boundsNode, croppedMask, masked);
+        JArray encoded = DoMaskedVAEEncode(vae, [scaledImage, 0], [croppedMask, 0], null);
+        return new(boundsNode, croppedMask, $"{encoded[0]}", scaledImage);
     }
 
     /// <summary>Returns a masked image composite with mask thresholding.</summary>
@@ -426,7 +486,27 @@ public class WorkflowGenerator
     /// <summary>Creates a node to save an image output.</summary>
     public string CreateImageSaveNode(JArray image, string id = null)
     {
-        if (Features.Contains("comfy_saveimage_ws") && !RestrictCustomNodes)
+        if (IsVideoModel())
+        {
+            if (UserInput.Get(T2IParamTypes.Text2VideoBoomerang, false))
+            {
+                string bounced = CreateNode("SwarmVideoBoomerang", new JObject()
+                {
+                    ["images"] = image
+                });
+                image = [bounced, 0];
+            }
+            return CreateNode("SwarmSaveAnimationWS", new JObject()
+            {
+                ["images"] = image,
+                ["fps"] = UserInput.Get(T2IParamTypes.Text2VideoFPS, 24),
+                ["lossless"] = false,
+                ["quality"] = 95,
+                ["method"] = "default",
+                ["format"] = UserInput.Get(T2IParamTypes.Text2VideoFormat, "webp")
+            }, id);
+        }
+        else if (Features.Contains("comfy_saveimage_ws") && !RestrictCustomNodes)
         {
             return CreateNode("SwarmSaveImageWS", new JObject()
             {
@@ -456,56 +536,87 @@ public class WorkflowGenerator
             LoadingVAE = parts[4].Length == 0 ? null : [parts[4], int.Parse(parts[5])];
             return (model, LoadingModel, LoadingClip, LoadingVAE);
         }
-        void requireClipModel(string name, string url)
+        void requireClipModel(string name, string url, string hash)
         {
             if (ClipModelsValid.Contains(name))
             {
                 return;
             }
-            string filePath = Utilities.CombinePathWithAbsolute(Program.ServerSettings.Paths.ActualModelRoot, Program.ServerSettings.Paths.SDClipFolder, name);
-            DownloadModel(name, filePath, url);
+            string filePath = Utilities.CombinePathWithAbsolute(Program.ServerSettings.Paths.ActualModelRoot, Program.ServerSettings.Paths.SDClipFolder.Split(';')[0], name);
+            DownloadModel(name, filePath, url, hash);
             ClipModelsValid.Add(name);
         }
         string getT5XXLModel()
         {
-            if (UserInput.TryGet(ComfyUIBackendExtension.T5XXLModel, out string model))
+            if (UserInput.TryGet(T2IParamTypes.T5XXLModel, out T2IModel model))
             {
-                return model;
+                return model.Name;
             }
-            requireClipModel("t5xxl_enconly.safetensors", "https://huggingface.co/mcmonkey/google_t5-v1_1-xxl_encoderonly/resolve/main/t5xxl_fp8_e4m3fn.safetensors");
+            requireClipModel("t5xxl_enconly.safetensors", "https://huggingface.co/mcmonkey/google_t5-v1_1-xxl_encoderonly/resolve/main/t5xxl_fp8_e4m3fn.safetensors", "7d330da4816157540d6bb7838bf63a0f02f573fc48ca4d8de34bb0cbfd514f09");
             return "t5xxl_enconly.safetensors";
         }
         string getClipLModel()
         {
-            if (UserInput.TryGet(ComfyUIBackendExtension.ClipLModel, out string model))
+            if (UserInput.TryGet(T2IParamTypes.ClipLModel, out T2IModel model))
             {
-                return model;
+                return model.Name;
             }
-            if (ComfyUIBackendExtension.ClipModels.Contains("clip_l_sdxl_base.safetensors"))
+            if (Program.T2IModelSets["Clip"].Models.ContainsKey("clip_l_sdxl_base.safetensors"))
             {
                 return "clip_l_sdxl_base.safetensors";
             }
-            requireClipModel("clip_l.safetensors", "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/text_encoder/model.fp16.safetensors");
+            requireClipModel("clip_l.safetensors", "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/text_encoder/model.fp16.safetensors", "660c6f5b1abae9dc498ac2d21e1347d2abdb0cf6c0c0c8576cd796491d9a6cdd");
             return "clip_l.safetensors";
         }
         string getClipGModel()
         {
-            if (UserInput.TryGet(ComfyUIBackendExtension.ClipGModel, out string model))
+            if (UserInput.TryGet(T2IParamTypes.ClipGModel, out T2IModel model))
             {
-                return model;
+                return model.Name;
             }
-            if (ComfyUIBackendExtension.ClipModels.Contains("clip_g_sdxl_base.safetensors"))
+            if (Program.T2IModelSets["Clip"].Models.ContainsKey("clip_g_sdxl_base.safetensors"))
             {
                 return "clip_g_sdxl_base.safetensors";
             }
-            requireClipModel("clip_g.safetensors", "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/text_encoder_2/model.fp16.safetensors");
+            requireClipModel("clip_g.safetensors", "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/text_encoder_2/model.fp16.safetensors", "ec310df2af79c318e24d20511b601a591ca8cd4f1fce1d8dff822a356bcdb1f4");
             return "clip_g.safetensors";
+        }
+        string getLlava3Model()
+        {
+            // TODO: is a selector param needed?
+            requireClipModel("llava_llama3_fp8_scaled.safetensors", "https://huggingface.co/Comfy-Org/HunyuanVideo_repackaged/resolve/main/split_files/text_encoders/llava_llama3_fp8_scaled.safetensors", "2f0c3ad255c282cead3f078753af37d19099cafcfc8265bbbd511f133e7af250");
+            return "llava_llama3_fp8_scaled.safetensors";
         }
         IsDifferentialDiffusion = false;
         LoadingModelType = type;
         if (!noCascadeFix && model.ModelClass?.ID == "stable-cascade-v1-stage-b" && model.Name.Contains("stage_b") && Program.MainSDModels.Models.TryGetValue(model.Name.Replace("stage_b", "stage_c"), out T2IModel altCascadeModel))
         {
             model = altCascadeModel;
+        }
+        void doVaeLoader(string defaultVal, string compatClass, string knownName)
+        {
+            string vaeFile = defaultVal;
+            string nodeId = null;
+            if (!NoVAEOverride && UserInput.TryGet(T2IParamTypes.VAE, out T2IModel vaeModel))
+            {
+                vaeFile = vaeModel.Name;
+                nodeId = "11";
+            }
+            if (string.IsNullOrWhiteSpace(vaeFile) || vaeFile == "None")
+            {
+                vaeFile = Program.T2IModelSets["VAE"].Models.Values.FirstOrDefault(m => m.ModelClass?.CompatClass == compatClass)?.Name;
+            }
+            if (string.IsNullOrWhiteSpace(vaeFile))
+            {
+                if (knownName is null)
+                {
+                    throw new SwarmUserErrorException("No default VAE for this model found, please download its VAE and set it as default in User Settings");
+                }
+                CommonModels.Known[knownName].DownloadNow().Wait();
+                Program.RefreshAllModelSets();
+                vaeFile = CommonModels.Known[knownName].FileName;
+            }
+            LoadingVAE = CreateVAELoader(vaeFile, nodeId);
         }
         if (model.ModelClass?.ID.EndsWith("/tensorrt") ?? false)
         {
@@ -550,28 +661,15 @@ public class WorkflowGenerator
                 ["type"] = "sd3"
             });
             LoadingClip = [singleClipLoader, 0];
-            string xlVae = UserInput.SourceSession?.User?.Settings?.VAEs?.DefaultSDXLVAE;
-            if (string.IsNullOrWhiteSpace(xlVae) || xlVae == "None")
-            {
-                xlVae = Program.T2IModelSets["VAE"].Models.Keys.FirstOrDefault(m => m.ToLowerFast().Contains("sdxl"));
-            }
-            if (string.IsNullOrWhiteSpace(xlVae))
-            {
-                throw new SwarmUserErrorException("No default SDXL VAE found, please download an SDXL VAE and set it as default in User Settings");
-            }
-            string vaeLoader = CreateNode("VAELoader", new JObject()
-            {
-                ["vae_name"] = xlVae
-            });
-            LoadingVAE = [vaeLoader, 0];
+            doVaeLoader(UserInput.SourceSession?.User?.Settings?.VAEs?.DefaultSDXLVAE, "stable-diffusion-xl-v1", "sdxl-vae");
         }
-        else if (model.OriginatingFolderPath.Replace('\\', '/').EndsWith("/unet") || model.OriginatingFolderPath.Replace('\\', '/').EndsWith("/diffusion_models")) // Hacky but it works for now
+        else if (model.IsDiffusionModelsFormat)
         {
             if (model.Metadata?.SpecialFormat == "gguf")
             {
                 if (!Features.Contains("gguf"))
                 {
-                    throw new SwarmUserErrorException("This model is in GGUF format, but the server does not have GGUF support installed. Cannot run.");
+                    throw new SwarmUserErrorException($"Model '{model.Name}' is in GGUF format, but the server does not have GGUF support installed. Cannot run.");
                 }
                 string modelNode = CreateNode("UnetLoaderGGUF", new JObject()
                 {
@@ -581,11 +679,30 @@ public class WorkflowGenerator
             }
             else
             {
+                if (model.RawFilePath.EndsWith(".gguf"))
+                {
+                    Logs.Error($"Model '{model.Name}' likely has corrupt/invalid metadata, and needs to be reset.");
+                }
                 string dtype = UserInput.Get(ComfyUIBackendExtension.PreferredDType, "automatic");
+                if (dtype == "automatic")
+                {
+                    if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                    {
+                        dtype = "fp8_e4m3fn";
+                        if (Utilities.PresumeNVidia40xx && Program.ServerSettings.Performance.AllowGpuSpecificOptimizations)
+                        {
+                            dtype = "fp8_e4m3fn_fast";
+                        }
+                    }
+                    else
+                    {
+                        dtype = "default";
+                    }
+                }
                 string modelNode = CreateNode("UNETLoader", new JObject()
                 {
                     ["unet_name"] = model.ToString(ModelFolderFormat),
-                    ["weight_dtype"] = dtype == "automatic" ? (IsFlux() ? "fp8_e4m3fn" : "default") : dtype
+                    ["weight_dtype"] = dtype
                 }, id);
                 LoadingModel = [modelNode, 0];
             }
@@ -596,7 +713,7 @@ public class WorkflowGenerator
         {
             if (!Features.Contains("bnb_nf4"))
             {
-                throw new SwarmUserErrorException("This model is in BitsAndBytes-NF4 format, but the server does not have BNB_NF4 support installed. Cannot run.");
+                throw new SwarmUserErrorException($"Model '{model.Name}' is in BitsAndBytes-NF4 format, but the server does not have BNB_NF4 support installed. Cannot run.");
             }
             string modelNode = CreateNode("CheckpointLoaderNF4", new JObject()
             {
@@ -606,8 +723,29 @@ public class WorkflowGenerator
             LoadingClip = [modelNode, 1];
             LoadingVAE = [modelNode, 2];
         }
+        else if (IsSana())
+        {
+            string sanaNode = CreateNode("SanaCheckpointLoader", new JObject()
+            {
+                ["ckpt_name"] = model.ToString(ModelFolderFormat),
+                ["model"] = "SanaMS_1600M_P1_D20"
+            }, id);
+            LoadingModel = [sanaNode, 0];
+            string clipLoader = CreateNode("GemmaLoader", new JObject()
+            {
+                ["model_name"] = "unsloth/gemma-2-2b-it-bnb-4bit",
+                ["device"] = "cpu",
+                ["dtype"] = "default"
+            });
+            LoadingClip = [clipLoader, 0];
+            doVaeLoader(null, "nvidia-sana-1600", "sana-dcae");
+        }
         else
         {
+            if (model.Metadata?.SpecialFormat == "gguf")
+            {
+                throw new SwarmUserErrorException($"Model '{model.Name}' is in GGUF format, but it's in your main Stable-Diffusion models folder. GGUF files are weird, and need to go in the special 'diffusion_models' folder.");
+            }
             string modelNode = CreateNode("CheckpointLoaderSimple", new JObject()
             {
                 ["ckpt_name"] = model.ToString(ModelFolderFormat)
@@ -630,7 +768,7 @@ public class WorkflowGenerator
             {
                 if (tencs == "")
                 {
-                    mode = "CLIP Only";
+                    mode = "CLIP + T5";
                 }
                 else
                 {
@@ -682,8 +820,16 @@ public class WorkflowGenerator
                     LoadingClip = [tripleClipLoader, 0];
                 }
             }
+            else if (LoadingClip is null)
+            {
+                throw new SwarmUserErrorException($"Model '{model.Name}' is a full checkpoint format model, but was placed in the diffusion_models backbone folder. Please move it to the standard Stable Diffusion models folder.");
+            }
+            if (LoadingVAE is null)
+            {
+                doVaeLoader(UserInput.SourceSession?.User?.Settings?.VAEs?.DefaultSD3VAE, "stable-diffusion-v3", "sd35-vae");
+            }
         }
-        else if (IsFlux() && (LoadingClip is null || LoadingVAE is null))
+        else if (IsFlux() && (LoadingClip is null || LoadingVAE is null || UserInput.Get(T2IParamTypes.T5XXLModel) is not null || UserInput.Get(T2IParamTypes.ClipLModel) is not null))
         {
             string loaderType = "DualCLIPLoader";
             if (getT5XXLModel().EndsWith(".gguf"))
@@ -697,20 +843,47 @@ public class WorkflowGenerator
                 ["type"] = "flux"
             });
             LoadingClip = [dualClipLoader, 0];
-            string fluxVae = UserInput.SourceSession?.User?.Settings?.VAEs?.DefaultFluxVAE;
-            if (string.IsNullOrWhiteSpace(fluxVae) || fluxVae == "None")
+            doVaeLoader(UserInput.SourceSession?.User?.Settings?.VAEs?.DefaultFluxVAE, "flux-1", "flux-ae");
+        }
+        else if (IsMochi() && (LoadingClip is null || LoadingVAE is null || UserInput.Get(T2IParamTypes.T5XXLModel) is not null))
+        {
+            string loaderType = "CLIPLoader";
+            if (getT5XXLModel().EndsWith(".gguf"))
             {
-                fluxVae = Program.T2IModelSets["VAE"].Models.Values.FirstOrDefault(m => m.ModelClass?.CompatClass == "flux-1")?.Name;
+                loaderType = "CLIPLoaderGGUF";
             }
-            if (string.IsNullOrWhiteSpace(fluxVae))
+            string clipLoader = CreateNode(loaderType, new JObject()
             {
-                throw new SwarmUserErrorException("No default Flux VAE found, please download a Flux VAE and set it as default in User Settings");
-            }
-            string vaeLoader = CreateNode("VAELoader", new JObject()
-            {
-                ["vae_name"] = fluxVae
+                ["clip_name"] = getT5XXLModel(),
+                ["type"] = "mochi"
             });
-            LoadingVAE = [vaeLoader, 0];
+            LoadingClip = [clipLoader, 0];
+            doVaeLoader(UserInput.SourceSession?.User?.Settings?.VAEs?.DefaultMochiVAE, "genmo-mochi-1", "mochi-vae");
+        }
+        else if (IsLTXV())
+        {
+            string loaderType = "CLIPLoader";
+            if (getT5XXLModel().EndsWith(".gguf"))
+            {
+                loaderType = "CLIPLoaderGGUF";
+            }
+            string clipLoader = CreateNode(loaderType, new JObject()
+            {
+                ["clip_name"] = getT5XXLModel(),
+                ["type"] = "ltxv"
+            });
+            LoadingClip = [clipLoader, 0];
+        }
+        else if (IsHunyuanVideo())
+        {
+            string dualClipLoader = CreateNode("DualCLIPLoader", new JObject()
+            {
+                ["clip_name1"] = getClipLModel(),
+                ["clip_name2"] = getLlava3Model(),
+                ["type"] = "hunyuan_video"
+            });
+            LoadingClip = [dualClipLoader, 0];
+            doVaeLoader(null, "hunyuan-video", "hunyuan-video-vae");
         }
         else if (CurrentCompatClass() == "auraflow-v1")
         {
@@ -731,17 +904,29 @@ public class WorkflowGenerator
             });
             LoadingModel = [discreteNode, 0];
         }
-        if (IsFlux() && UserInput.TryGet(T2IParamTypes.SigmaShift, out double shiftVal))
+        if (UserInput.TryGet(T2IParamTypes.SigmaShift, out double shiftVal))
         {
-            string fluxNode = CreateNode("ModelSamplingFlux", new JObject()
+            if (IsFlux())
             {
-                ["model"] = LoadingModel,
-                ["width"] = UserInput.GetImageWidth(),
-                ["height"] = UserInput.GetImageHeight(),
-                ["max_shift"] = shiftVal,
-                ["base_shift"] = 0.5 // TODO: Does this need an input?
-            });
-            LoadingModel = [fluxNode, 0];
+                string fluxNode = CreateNode("ModelSamplingFlux", new JObject()
+                {
+                    ["model"] = LoadingModel,
+                    ["width"] = UserInput.GetImageWidth(),
+                    ["height"] = UserInput.GetImageHeight(),
+                    ["max_shift"] = shiftVal,
+                    ["base_shift"] = 0.5 // TODO: Does this need an input?
+                });
+                LoadingModel = [fluxNode, 0];
+            }
+            else if (IsHunyuanVideo())
+            {
+                string fluxNode = CreateNode("ModelSamplingSD3", new JObject()
+                {
+                    ["model"] = LoadingModel,
+                    ["shift"] = shiftVal
+                });
+                LoadingModel = [fluxNode, 0];
+            }
         }
         foreach (WorkflowGenStep step in ModelGenSteps)
         {
@@ -749,22 +934,70 @@ public class WorkflowGenerator
         }
         if (LoadingClip is null)
         {
-            throw new SwarmUserErrorException($"Model loader for {model.Name} didn't work - are you sure it has an architecture ID set properly?");
+            if (string.IsNullOrWhiteSpace(model.Metadata?.ModelClassType))
+            {
+                throw new SwarmUserErrorException($"Model loader for {model.Name} didn't work - architecture ID is missing. Please click Edit Metadata on the model and apply a valid architecture ID.");
+            }
+            throw new SwarmUserErrorException($"Model loader for {model.Name} didn't work - are you sure it has an architecture ID set properly? (Currently set to: '{model.Metadata?.ModelClassType}')");
         }
         NodeHelpers[helper] = $"{LoadingModel[0]}:{LoadingModel[1]}" + (LoadingClip is null ? "::" : $":{LoadingClip[0]}:{LoadingClip[1]}") + (LoadingVAE is null ? "::" : $":{LoadingVAE[0]}:{LoadingVAE[1]}");
         return (model, LoadingModel, LoadingClip, LoadingVAE);
     }
 
+    /// <summary>Creates a VAELoader node and returns its node ID. Avoids duplication.</summary>
+    public JArray CreateVAELoader(string vae, string id = null)
+    {
+        string vaeFixed = vae.Replace('\\', '/').Replace("/", ModelFolderFormat ?? $"{Path.DirectorySeparatorChar}");
+        if (id is null && NodeHelpers.TryGetValue($"vaeloader-{vaeFixed}", out string helper))
+        {
+            return [helper, 0];
+        }
+        string vaeLoader;
+        if (IsSana())
+        {
+            vaeLoader = CreateNode("ExtraVAELoader", new JObject()
+            {
+                ["vae_name"] = vaeFixed,
+                ["vae_type"] = "dcae-f32c32-sana-1.0",
+                ["dtype"] = "FP16"
+            }, id);
+        }
+        else
+        {
+            vaeLoader = CreateNode("VAELoader", new JObject()
+            {
+                ["vae_name"] = vaeFixed
+            }, id);
+        }
+        NodeHelpers[$"vaeloader-{vae}"] = vaeLoader;
+        return [vaeLoader, 0];
+    }
+
     /// <summary>Creates a VAEDecode node and returns its node ID.</summary>
     public string CreateVAEDecode(JArray vae, JArray latent, string id = null)
     {
-        if (UserInput.TryGet(T2IParamTypes.VAETileSize, out int tileSize))
+        if (UserInput.TryGet(T2IParamTypes.VAETileSize, out _) || UserInput.TryGet(T2IParamTypes.VAETemporalTileSize, out _))
         {
             return CreateNode("VAEDecodeTiled", new JObject()
             {
                 ["vae"] = vae,
                 ["samples"] = latent,
-                ["tile_size"] = tileSize
+                ["tile_size"] = UserInput.Get(T2IParamTypes.VAETileSize, 256),
+                ["overlap"] = UserInput.Get(T2IParamTypes.VAETileOverlap, 64),
+                ["temporal_size"] = UserInput.Get(T2IParamTypes.VAETemporalTileSize, 32),
+                ["temporal_overlap"] = UserInput.Get(T2IParamTypes.VAETemporalTileOverlap, 4)
+            }, id);
+        }
+        else if (IsHunyuanVideo()) // The VAE requirements for hunyuan are basically unobtainable, so force tiling as stupidproofing
+        {
+            return CreateNode("VAEDecodeTiled", new JObject()
+            {
+                ["vae"] = vae,
+                ["samples"] = latent,
+                ["tile_size"] = 256,
+                ["overlap"] = 64,
+                ["temporal_size"] = 32,
+                ["temporal_overlap"] = 4
             }, id);
         }
         return CreateNode("VAEDecode", new JObject()
@@ -784,8 +1017,27 @@ public class WorkflowGenerator
     public string DefaultPreviews = "default";
 
     /// <summary>Creates a KSampler and returns its node ID.</summary>
-    public string CreateKSampler(JArray model, JArray pos, JArray neg, JArray latent, double cfg, int steps, int startStep, int endStep, long seed, bool returnWithLeftoverNoise, bool addNoise, double sigmin = -1, double sigmax = -1, string previews = null, string defsampler = null, string defscheduler = null, string id = null, bool rawSampler = false, bool doTiled = false, bool isFirstSampler = false)
+    public string CreateKSampler(JArray model, JArray pos, JArray neg, JArray latent, double cfg, int steps, int startStep, int endStep, long seed, bool returnWithLeftoverNoise, bool addNoise, double sigmin = -1, double sigmax = -1, string previews = null, string defsampler = null, string defscheduler = null, string id = null, bool rawSampler = false, bool doTiled = false, bool isFirstSampler = false, bool hadSpecialCond = false)
     {
+        if (IsVideoModel())
+        {
+            previews ??= UserInput.Get(ComfyUIBackendExtension.Text2VideoPreviewType, "animate");
+        }
+        if (IsLTXV())
+        {
+            if (!hadSpecialCond)
+            {
+                string ltxvcond = CreateNode("LTXVConditioning", new JObject()
+                {
+                    ["positive"] = pos,
+                    ["negative"] = neg,
+                    ["frame_rate"] = UserInput.Get(T2IParamTypes.Text2VideoFPS, 25)
+                });
+                pos = [ltxvcond, 0];
+                neg = [ltxvcond, 1];
+            }
+            defscheduler ??= "ltxv";
+        }
         bool willCascadeFix = false;
         JArray cascadeModel = null;
         if (!rawSampler && IsCascade() && FinalLoadedModel.Name.Contains("stage_c") && Program.MainSDModels.Models.TryGetValue(FinalLoadedModel.Name.Replace("stage_c", "stage_b"), out T2IModel bModel))
@@ -804,7 +1056,55 @@ public class WorkflowGenerator
         {
             defscheduler ??= "simple";
         }
-        if (FinalLoadedModel?.ModelClass ?.ID == "stable-diffusion-xl-v1-edit")
+        string classId = FinalLoadedModel?.ModelClass?.ID ?? "";
+        static bool isSpecial(T2IModel model)
+        {
+            string modelId = model?.ModelClass?.ID ?? "";
+            return modelId.EndsWith("/lora-depth") || modelId.EndsWith("/lora-canny");
+        }
+        if (classId == "Flux.1-dev/inpaint")
+        {
+            // Not sure why, but InpaintModelConditioning is required here.
+            JArray img = FinalInputImage;
+            JArray mask = FinalMask;
+            if (MaskShrunkInfo is not null && MaskShrunkInfo.ScaledImage is not null)
+            {
+                img = [MaskShrunkInfo.ScaledImage, 0];
+                mask = [MaskShrunkInfo.CroppedMask, 0];
+            }
+            string inpaintNode = CreateNode("InpaintModelConditioning", new JObject()
+            {
+                ["positive"] = pos,
+                ["negative"] = neg,
+                ["vae"] = FinalVae,
+                ["pixels"] = img,
+                ["mask"] = mask,
+                ["noise_mask"] = true
+            });
+            pos = [inpaintNode, 0];
+            neg = [inpaintNode, 1];
+            latent = [inpaintNode, 2];
+        }
+        if (classId.EndsWith("/canny") || classId.EndsWith("/depth") || FinalLoadedModelList.Any(isSpecial))
+        {
+            if (FinalInputImage is null)
+            {
+                // TODO: Get the correct image (eg if canny/depth is used as a refiner or something silly it should still work)
+                string decoded = CreateVAEDecode(FinalVae, latent);
+                FinalInputImage = [decoded, 0];
+            }
+            string ip2p2condNode = CreateNode("InstructPixToPixConditioning", new JObject()
+            {
+                ["positive"] = pos,
+                ["negative"] = neg,
+                ["vae"] = FinalVae,
+                ["pixels"] = FinalInputImage
+            });
+            pos = [ip2p2condNode, 0];
+            neg = [ip2p2condNode, 1];
+            latent = [ip2p2condNode, 2];
+        }
+        if (classId == "stable-diffusion-xl-v1-edit")
         {
             // TODO: SamplerCustomAdvanced logic should be used for *all* models, not just ip2p
             if (FinalInputImage is null)
@@ -952,6 +1252,18 @@ public class WorkflowGenerator
         return created;
     }
 
+    /// <summary>Creates a VAE Encode node and applies mask..</summary>
+    public JArray DoMaskedVAEEncode(JArray vae, JArray image, JArray mask, string id)
+    {
+        string encoded = CreateVAEEncode(vae, image, id, mask: mask);
+        string appliedNode = CreateNode("SetLatentNoiseMask", new JObject()
+        {
+            ["samples"] = new JArray() { encoded, 0 },
+            ["mask"] = mask
+        });
+        return [appliedNode, 0];
+    }
+
     /// <summary>Creates a VAE Encode node.</summary>
     public string CreateVAEEncode(JArray vae, JArray image, string id = null, bool noCascade = false, JArray mask = null)
     {
@@ -1002,6 +1314,46 @@ public class WorkflowGenerator
             return CreateNode("EmptySD3LatentImage", new JObject()
             {
                 ["batch_size"] = batchSize,
+                ["height"] = height,
+                ["width"] = width
+            }, id);
+        }
+        else if (IsSana())
+        {
+            return CreateNode("EmptySanaLatentImage", new JObject()
+            {
+                ["batch_size"] = batchSize,
+                ["height"] = height,
+                ["width"] = width
+            }, id);
+        }
+        else if (IsMochi())
+        {
+            return CreateNode("EmptyMochiLatentVideo", new JObject()
+            {
+                ["batch_size"] = batchSize,
+                ["length"] = UserInput.Get(T2IParamTypes.Text2VideoFrames, 25),
+                ["height"] = height,
+                ["width"] = width
+            }, id);
+        }
+        else if (IsLTXV())
+        {
+            return CreateNode("EmptyLTXVLatentVideo", new JObject()
+            {
+                ["batch_size"] = batchSize,
+                ["length"] = UserInput.Get(T2IParamTypes.Text2VideoFrames, 97),
+                ["height"] = height,
+                ["width"] = width
+            }, id);
+        }
+        else if (IsHunyuanVideo())
+        {
+
+            return CreateNode("EmptyHunyuanLatentVideo", new JObject()
+            {
+                ["batch_size"] = batchSize,
+                ["length"] = UserInput.Get(T2IParamTypes.Text2VideoFrames, 73),
                 ["height"] = height,
                 ["width"] = width
             }, id);
@@ -1060,6 +1412,49 @@ public class WorkflowGenerator
             ["model"] = FinalModel
         });
         FinalModel = [diffNode, 0];
+    }
+
+    /// <summary>Creates an image preprocessor node.</summary>
+    public JArray CreatePreprocessor(string preprocessor, JArray imageNode)
+    {
+        JToken objectData = ComfyUIBackendExtension.ControlNetPreprocessors[preprocessor] ?? throw new SwarmUserErrorException($"ComfyUI backend does not have a preprocessor named '{preprocessor}'");
+        if (objectData is JObject objObj && objObj.TryGetValue("swarm_custom", out JToken swarmCustomTok) && swarmCustomTok.Value<bool>())
+        {
+            return  CreateNodesFromSpecialSyntax(objObj, [imageNode]);
+        }
+        string preProcNode = CreateNode(preprocessor, (_, n) =>
+        {
+            n["inputs"] = new JObject()
+            {
+                ["image"] = imageNode
+            };
+            foreach (string type in new[] { "required", "optional" })
+            {
+                if (((JObject)objectData["input"]).TryGetValue(type, out JToken set))
+                {
+                    foreach ((string key, JToken data) in (JObject)set)
+                    {
+                        if (key == "mask")
+                        {
+                            if (FinalMask is null)
+                            {
+                                throw new SwarmUserErrorException($"Preprocessor '{preprocessor}' requires a mask. Please set a mask under the Init Image parameter group.");
+                            }
+                            n["inputs"]["mask"] = FinalMask;
+                        }
+                        else if (key == "resolution")
+                        {
+                            n["inputs"]["resolution"] = (int)Math.Round(Math.Sqrt(UserInput.GetImageWidth() * UserInput.GetImageHeight()) / 64) * 64;
+                        }
+                        else if (data.Count() == 2 && data[1] is JObject settings && settings.TryGetValue("default", out JToken defaultValue))
+                        {
+                            n["inputs"][key] = defaultValue;
+                        }
+                    }
+                }
+            }
+        });
+        return [preProcNode, 0];
     }
 
     /// <summary>Create nodes from a special prebuilt node structure data definition.</summary>
@@ -1165,7 +1560,15 @@ public class WorkflowGenerator
         int height = UserInput.GetImageHeight();
         bool enhance = UserInput.Get(T2IParamTypes.ModelSpecificEnhancements, true);
         bool needsAdvancedEncode = (prompt.Contains('[') && prompt.Contains(']')) || prompt.Contains("<break>");
-        if (Features.Contains("variation_seed") && needsAdvancedEncode || (UserInput.TryGet(T2IParamTypes.FluxGuidanceScale, out _) && IsFlux()))
+        if (IsSana())
+        {
+            node = CreateNode("SanaTextEncode", new JObject()
+            {
+                ["GEMMA"] = clip,
+                ["text"] = prompt
+            }, id);
+        }
+        else if (Features.Contains("variation_seed") && needsAdvancedEncode || (UserInput.TryGet(T2IParamTypes.FluxGuidanceScale, out _) && HasFluxGuidance()))
         {
             node = CreateNode("SwarmClipTextEncodeAdvanced", new JObject()
             {

@@ -98,6 +98,7 @@ class SimpleTab {
     markLoading() {
         this.loadingSpinner.style.display = '';
         this.imageElem.style.filter = 'blur(5px)';
+        uiImprover.runLoadSpinner(this.loadingSpinner);
     }
 
     markDoneLoading() {
@@ -273,7 +274,7 @@ class SimpleTabGenerateHandler extends GenerateHandler {
 
     gotImagePreview(image, metadata, batchId) {
         simpleTab.markLoading();
-        if (image == 'imgs/model_placeholder.jpg') {
+        if (image.startsWith('DOPLACEHOLDER:')) {
             return;
         }
         simpleTab.setImage(image);

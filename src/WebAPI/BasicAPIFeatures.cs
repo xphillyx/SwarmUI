@@ -7,14 +7,10 @@ using FreneticUtilities.FreneticExtensions;
 using Microsoft.AspNetCore.Http;
 using FreneticUtilities.FreneticDataSyntax;
 using System.Net.WebSockets;
-using System.Runtime.InteropServices;
-using System.IO;
-using SwarmUI.Builtin_ComfyUIBackend;
 using SwarmUI.Backends;
-using System.Diagnostics;
-using System.Net.Http;
 using Newtonsoft.Json;
 using Microsoft.Extensions.Primitives;
+using System.Reflection;
 
 namespace SwarmUI.WebAPI;
 
@@ -24,21 +20,21 @@ public static class BasicAPIFeatures
     /// <summary>Called by <see cref="Program"/> to register the core API calls.</summary>
     public static void Register()
     {
-        API.RegisterAPICall(GetNewSession);
-        API.RegisterAPICall(InstallConfirmWS, true);
-        API.RegisterAPICall(GetMyUserData);
-        API.RegisterAPICall(AddNewPreset, true);
-        API.RegisterAPICall(DuplicatePreset, true);
-        API.RegisterAPICall(DeletePreset, true);
-        API.RegisterAPICall(GetCurrentStatus);
-        API.RegisterAPICall(InterruptAll, true);
-        API.RegisterAPICall(GetUserSettings);
-        API.RegisterAPICall(ChangeUserSettings, true);
-        API.RegisterAPICall(SetParamEdits, true);
-        API.RegisterAPICall(GetLanguage);
-        API.RegisterAPICall(ServerDebugMessage);
-        API.RegisterAPICall(SetAPIKey, true);
-        API.RegisterAPICall(GetAPIKeyStatus);
+        API.RegisterAPICall(GetNewSession); // GetNewSession is special
+        API.RegisterAPICall(InstallConfirmWS, true, Permissions.Install);
+        API.RegisterAPICall(GetMyUserData, false, Permissions.FundamentalGenerateTabAccess);
+        API.RegisterAPICall(AddNewPreset, true, Permissions.ManagePresets);
+        API.RegisterAPICall(DuplicatePreset, true, Permissions.ManagePresets);
+        API.RegisterAPICall(DeletePreset, true, Permissions.ManagePresets);
+        API.RegisterAPICall(GetCurrentStatus, false, Permissions.FundamentalGenerateTabAccess);
+        API.RegisterAPICall(InterruptAll, true, Permissions.BasicImageGeneration);
+        API.RegisterAPICall(GetUserSettings, false, Permissions.ReadUserSettings);
+        API.RegisterAPICall(ChangeUserSettings, true, Permissions.EditUserSettings);
+        API.RegisterAPICall(SetParamEdits, true, Permissions.EditParams);
+        API.RegisterAPICall(GetLanguage, false, Permissions.FundamentalGenerateTabAccess);
+        API.RegisterAPICall(ServerDebugMessage, false, Permissions.ServerDebugMessage);
+        API.RegisterAPICall(SetAPIKey, true, Permissions.EditUserSettings);
+        API.RegisterAPICall(GetAPIKeyStatus, false, Permissions.ReadUserSettings);
         T2IAPI.Register();
         ModelsAPI.Register();
         BackendAPI.Register();
@@ -46,18 +42,14 @@ public static class BasicAPIFeatures
         UtilAPI.Register();
     }
 
-    public static string GetUserIdFor(HttpContext context)
-    {
-        if (context.Request.Headers.TryGetValue("X-SWARM-USER_ID", out StringValues user_id)) // TODO: Proper auth
-        {
-            return user_id[0];
-        }
-        return SessionHandler.LocalUserID; // TODO: disable this if non-local swarm instance
-    }
-
     /// <summary>API Route to create a new session automatically.</summary>
     public static async Task<JObject> GetNewSession(HttpContext context)
     {
+        string userId = WebServer.GetUserIdFor(context);
+        if (userId is null)
+        {
+            return new JObject() { ["error"] = "Invalid or unauthorized." };
+        }
         string source = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         if (context.Request.Headers.TryGetValue("X-Forwarded-For", out StringValues forwardedFor) && forwardedFor.Count > 0)
         {
@@ -70,7 +62,7 @@ public static class BasicAPIFeatures
         {
             source = source[..100] + "...";
         }
-        Session session = Program.Sessions.CreateAdminSession(source, GetUserIdFor(context));
+        Session session = Program.Sessions.CreateAdminSession(source, userId);
         return new JObject()
         {
             ["session_id"] = session.ID,
@@ -78,7 +70,8 @@ public static class BasicAPIFeatures
             ["output_append_user"] = Program.ServerSettings.Paths.AppendUserNameToOutputPath,
             ["version"] = Utilities.VaryID,
             ["server_id"] = Utilities.LoopPreventionID.ToString(),
-            ["count_running"] = Program.Backends.T2IBackends.Values.Count(b => b.Backend.Status == BackendStatus.RUNNING || b.Backend.Status == BackendStatus.LOADING)
+            ["count_running"] = Program.Backends.T2IBackends.Values.Count(b => b.Backend.Status == BackendStatus.RUNNING || b.Backend.Status == BackendStatus.LOADING),
+            ["permissions"] = JArray.FromObject(session.User.GetPermissions())
         };
     }
 
@@ -89,266 +82,16 @@ public static class BasicAPIFeatures
             await socket.SendJson(new JObject() { ["error"] = $"Server is already installed!" }, API.WebsocketTimeout);
             return null;
         }
-        if (!session.User.Restrictions.Admin)
+        try
         {
-            await socket.SendJson(new JObject() { ["error"] = $"You are not an admin of this server, install request refused." }, API.WebsocketTimeout);
-            return null;
+            await Installation.Install(socket, theme, installed_for, backend, models, install_amd, language);
         }
-        async Task output(string str)
+        catch (SwarmReadableErrorException ex)
         {
-            Logs.Init($"[Installer] {str}");
-            await socket.SendJson(new JObject() { ["info"] = str }, API.WebsocketTimeout);
+            Logs.Init($"[Installer] Error: {ex.Message}");
+            await socket.SendJson(new JObject() { ["info"] = $"Error: {ex.Message}" }, API.WebsocketTimeout);
+            await socket.SendJson(new JObject() { ["error"] = ex.Message }, API.WebsocketTimeout);
         }
-        await output("Installation request received, processing...");
-        if (Program.Web.RegisteredThemes.ContainsKey(theme))
-        {
-            await output($"Setting theme to {theme}.");
-            Program.ServerSettings.DefaultUser.Theme = theme;
-        }
-        else
-        {
-            await output($"Theme {theme} is not valid!");
-            await socket.SendJson(new JObject() { ["error"] = $"Invalid theme input!" }, API.WebsocketTimeout);
-            return null;
-        }
-        Program.ServerSettings.DefaultUser.Language = language;
-        switch (installed_for)
-        {
-            case "just_self":
-                await output("Configuring settings as 'just yourself' install.");
-                Program.ServerSettings.Network.Host = "localhost";
-                Program.ServerSettings.Network.Port = 7801;
-                Program.ServerSettings.Network.PortCanChange = true;
-                Program.ServerSettings.LaunchMode = "web"; // TODO: Electron?
-                break;
-            case "just_self_lan":
-                await output("Configuring settings as 'just yourself (LAN)' install.");
-                Program.ServerSettings.Network.Host = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "*" : "0.0.0.0";
-                Program.ServerSettings.Network.Port = 7801;
-                Program.ServerSettings.Network.PortCanChange = true;
-                Program.ServerSettings.LaunchMode = "web";
-                break;
-            default:
-                await output($"Invalid install type {installed_for}!");
-                await socket.SendJson(new JObject() { ["error"] = $"Invalid install type!" }, API.WebsocketTimeout);
-                return null;
-        }
-        int stepsThusFar = 1;
-        int totalSteps = 4;
-        if (backend == "comfyui")
-        {
-            totalSteps++;
-        }
-        if (models != "none")
-        {
-            totalSteps += models.Split(',').Length;
-        }
-        void updateProgress(long progress, long total, long perSec)
-        {
-            // TODO: better way to send these out without waiting
-            socket.SendJson(new JObject() { ["progress"] = progress, ["total"] = total, ["steps"] = stepsThusFar, ["total_steps"] = totalSteps, ["per_second"] = perSec }, API.WebsocketTimeout).Wait();
-        }
-        switch (backend)
-        {
-            case "comfyui":
-                {
-                    await output("Downloading ComfyUI backend... please wait...");
-                    Directory.CreateDirectory("dlbackend/");
-                    string path;
-                    string extraArgs = "";
-                    bool enablePreviews = true;
-                    if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-                    {
-                        try
-                        {
-                            if (install_amd)
-                            {
-                                await Utilities.DownloadFile("https://github.com/comfyanonymous/ComfyUI/releases/download/latest/ComfyUI_windows_portable_nvidia_cu118_or_cpu_22_05_2023.7z", "dlbackend/comfyui_dl.7z", updateProgress);
-                            }
-                            else
-                            {
-                                await Utilities.DownloadFile("https://github.com/comfyanonymous/ComfyUI/releases/latest/download/ComfyUI_windows_portable_nvidia.7z", "dlbackend/comfyui_dl.7z", updateProgress);
-                            }
-                        }
-                        catch (HttpRequestException ex)
-                        {
-                            Logs.Error($"Comfy download failed: {ex.ReadableString()}");
-                            Logs.Info("Will try alternate download...");
-                            await Utilities.DownloadFile("https://github.com/comfyanonymous/ComfyUI/releases/download/latest/ComfyUI_windows_portable_nvidia_or_cpu_nightly_pytorch.7z", "dlbackend/comfyui_dl.7z", updateProgress);
-                        }
-                        stepsThusFar++;
-                        updateProgress(0, 0, 0);
-                        await output("Downloaded! Extracting... (look in terminal window for details)");
-                        Directory.CreateDirectory("dlbackend/tmpcomfy/");
-                        await Process.Start("launchtools/7z/win/7za.exe", $"x dlbackend/comfyui_dl.7z -o\"dlbackend/tmpcomfy/\" -y").WaitForExitAsync(Program.GlobalProgramCancel);
-                        void moveFolder()
-                        {
-                            if (Directory.Exists("dlbackend/tmpcomfy/ComfyUI_windows_portable"))
-                            {
-                                Directory.Move("dlbackend/tmpcomfy/ComfyUI_windows_portable", "dlbackend/comfy");
-                            }
-                            else
-                            {
-                                Directory.Move("dlbackend/tmpcomfy/ComfyUI_windows_portable_nightly_pytorch", "dlbackend/comfy");
-                            }
-                        };
-                        try
-                        {
-                            moveFolder();
-                        }
-                        catch (Exception)
-                        {
-                            // This might fail if eg an antivirus program locks up the folder, so give it a few seconds to do its job then try the move again
-                            await Task.Delay(TimeSpan.FromSeconds(5));
-                            try
-                            {
-                                moveFolder();
-                            }
-                            catch (Exception)
-                            {
-                                // Just in case the lock up is slow.
-                                await Task.Delay(TimeSpan.FromSeconds(15));
-                                moveFolder();
-                                // This has been a 20 second delay now, so either it's done now and works, or the problem can't be resolved by waiting, so don't waste the user's time with more tries.
-                            }
-                        }
-                        await output("Installing prereqs...");
-                        await Utilities.DownloadFile("https://aka.ms/vs/16/release/vc_redist.x64.exe", "dlbackend/vc_redist.x64.exe", updateProgress);
-                        updateProgress(0, 0, 0);
-                        await Process.Start(new ProcessStartInfo(Path.GetFullPath("dlbackend/vc_redist.x64.exe"), "/quiet /install /passive /norestart") { UseShellExecute = true }).WaitForExitAsync(Program.GlobalProgramCancel);
-                        path = "dlbackend/comfy/ComfyUI/main.py";
-                        string comfyFolderPath = Path.GetFullPath("dlbackend/comfy");
-                        string fetchResp = await Utilities.RunGitProcess($"fetch", $"{comfyFolderPath}/ComfyUI");
-                        Logs.Debug($"ComfyUI Install git fetch response: {fetchResp}");
-                        string checkoutResp = await Utilities.RunGitProcess($"checkout master", $"{comfyFolderPath}/ComfyUI");
-                        Logs.Debug($"ComfyUI Install git checkout master response: {checkoutResp}");
-                        if (install_amd)
-                        {
-                            enablePreviews = false;
-                            Logs.LogLevel level = Logs.MinimumLevel;
-                            Logs.MinimumLevel = Logs.LogLevel.Verbose;
-                            try
-                            {
-                                await output("Fixing Comfy install...");
-                                // Note: the old Python 3.10 comfy file is needed for AMD, and it has a cursed git config (mandatory auth header? argh) so this is a hack-fix for that
-                                File.WriteAllBytes("dlbackend/comfy/ComfyUI/.git/config", "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n\tignorecase = true\n[remote \"origin\"]\n\turl = https://github.com/comfyanonymous/ComfyUI\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[gc]\n\tauto = 0\n[branch \"master\"]\n\tremote = origin\n\tmerge = refs/heads/master\n[lfs]\n\trepositoryformatversion = 0\n[remote \"upstream\"]\n\turl = https://github.com/comfyanonymous/ComfyUI.git\n\tfetch = +refs/heads/*:refs/remotes/upstream/*\n".EncodeUTF8());
-                                string response = await Utilities.RunGitProcess($"pull", $"{comfyFolderPath}/ComfyUI");
-                                Logs.Debug($"ComfyUI Install git pull response: {response}");
-                                await NetworkBackendUtils.RunProcessWithMonitoring(new ProcessStartInfo($"{comfyFolderPath}/python_embeded/python.exe", "-s -m pip install -U -r ComfyUI/requirements.txt") { WorkingDirectory = comfyFolderPath }, "ComfyUI Install (python requirements)", "comfyinstall");
-                                await output("Installing AMD compatible Torch-DirectML...");
-                                await NetworkBackendUtils.RunProcessWithMonitoring(new ProcessStartInfo($"{comfyFolderPath}/python_embeded/python.exe", "-s -m pip install torch-directml") { UseShellExecute = false, WorkingDirectory = comfyFolderPath }, "ComfyUI Install (directml)", "comfyinstall");
-                                extraArgs += "--directml ";
-                            }
-                            finally
-                            {
-                                Logs.MinimumLevel = level;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        stepsThusFar++;
-                        updateProgress(0, 0, 0);
-                        string gpuType = install_amd ? "amd" : "nv";
-                        Logs.LogLevel level = Logs.MinimumLevel;
-                        Logs.MinimumLevel = Logs.LogLevel.Verbose;
-                        try
-                        {
-                            Process installer = Process.Start(new ProcessStartInfo("/bin/bash", $"launchtools/comfy-install-linux.sh {gpuType}") { RedirectStandardOutput = true, UseShellExecute = false, RedirectStandardError = true });
-                            NetworkBackendUtils.ReportLogsFromProcess(installer, "ComfyUI Install (Linux Script)", "comfyinstall");
-                            await installer.WaitForExitAsync(Program.GlobalProgramCancel);
-                            if (installer.ExitCode != 0)
-                            {
-                                await output("ComfyUI install failed!");
-                                await socket.SendJson(new JObject() { ["error"] = "ComfyUI install failed! Check debug logs for details." }, API.WebsocketTimeout);
-                                return null;
-                            }
-                            path = "dlbackend/ComfyUI/main.py";
-                        }
-                        finally
-                        {
-                            Logs.MinimumLevel = level;
-                        }
-                    }
-                    NvidiaUtil.NvidiaInfo[] nv = NvidiaUtil.QueryNvidia();
-                    int gpu = 0;
-                    if (nv is not null && nv.Length > 0)
-                    {
-                        NvidiaUtil.NvidiaInfo mostVRAM = nv.OrderByDescending(n => n.TotalMemory.InBytes).First();
-                        gpu = mostVRAM.ID;
-                    }
-                    await output("Enabling ComfyUI...");
-                    Program.Backends.AddNewOfType(Program.Backends.BackendTypes["comfyui_selfstart"], new ComfyUISelfStartBackend.ComfyUISelfStartSettings() { StartScript = path, GPU_ID = $"{gpu}", ExtraArgs = extraArgs.Trim(), EnablePreviews = enablePreviews });
-                    break;
-                }
-            case "none":
-                await output("Not installing any backend.");
-                break;
-            default:
-                await output($"Invalid backend type {backend}!");
-                await socket.SendJson(new JObject() { ["error"] = $"Invalid backend type!" }, API.WebsocketTimeout);
-                return null;
-        }
-        stepsThusFar++;
-        updateProgress(0, 0, 0);
-        if (models != "none")
-        {
-            foreach (string model in models.Split(','))
-            {
-                (string file, string subfolder) = model.Trim() switch
-                {
-                    "sd15" => ("https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors", "OfficialStableDiffusion"),
-                    "sd21" => ("https://huggingface.co/stabilityai/stable-diffusion-2-1/resolve/main/v2-1_768-ema-pruned.safetensors", "OfficialStableDiffusion"),
-                    "sdxl1" => ("https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors", "OfficialStableDiffusion"),
-                    "sdxl1refiner" => ("https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0/resolve/main/sd_xl_refiner_1.0.safetensors", "OfficialStableDiffusion"),
-                    "fluxschnell" => ("https://huggingface.co/Comfy-Org/flux1-schnell/resolve/main/flux1-schnell-fp8.safetensors", "Flux"),
-                    "fluxdev" => ("https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/flux1-dev-fp8.safetensors", "Flux"),
-                    _ => (null, null)
-                };
-                if (file is null)
-                {
-                    await output($"Invalid model {model}!");
-                    await socket.SendJson(new JObject() { ["error"] = $"Invalid model!" }, API.WebsocketTimeout);
-                    return null;
-                }
-                await output($"Downloading model from '{file}'... please wait...");
-                string path = Utilities.CombinePathWithAbsolute(Environment.CurrentDirectory, Program.ServerSettings.Paths.ModelRoot, Program.ServerSettings.Paths.SDModelFolder.Split(';')[0]);
-                string folder = $"{path}/{subfolder}";
-                Directory.CreateDirectory(folder);
-                string filename = file.AfterLast('/');
-                try
-                {
-                    await Utilities.DownloadFile(file, $"{folder}/{filename}", updateProgress);
-                }
-                catch (IOException ex)
-                {
-                    Logs.Error($"Failed to download '{file}' (IO): {ex.GetType().Name}: {ex.Message}");
-                    Logs.Debug($"Download exception: {ex.ReadableString()}");
-                }
-                catch (HttpRequestException ex)
-                {
-                    Logs.Error($"Failed to download '{file}' (HTTP): {ex.GetType().Name}: {ex.Message}");
-                    Logs.Debug($"Download exception: {ex.ReadableString()}");
-                }
-                stepsThusFar++;
-                updateProgress(0, 0, 0);
-                await output("Model download complete.");
-            }
-            Program.MainSDModels.Refresh();
-        }
-        stepsThusFar++;
-        updateProgress(0, 0, 0);
-        Program.ServerSettings.IsInstalled = true;
-        if (Program.ServerSettings.LaunchMode == "webinstall")
-        {
-            Program.ServerSettings.LaunchMode = "web";
-        }
-        Program.SaveSettingsFile();
-        await Program.Backends.ReloadAllBackends();
-        stepsThusFar++;
-        updateProgress(0, 0, 0);
-        await output("Installed!");
-        await socket.SendJson(new JObject() { ["success"] = true }, API.WebsocketTimeout);
         return null;
     }
 
@@ -361,6 +104,7 @@ public static class BasicAPIFeatures
             ["user_name"] = session.User.UserID,
             ["presets"] = new JArray(session.User.GetAllPresets().Select(p => p.NetData()).ToArray()),
             ["language"] = session.User.Settings.Language,
+            ["permissions"] = JArray.FromObject(session.User.GetPermissions()),
             ["autocompletions"] = string.IsNullOrWhiteSpace(settings.Source) ? null : new JArray(AutoCompleteListHelper.GetData(settings.Source, settings.EscapeParens, settings.Suffix, settings.SpacingMode))
         };
     }
@@ -483,7 +227,7 @@ public static class BasicAPIFeatures
                 ["css_paths"] = JArray.FromObject(theme.CSSPaths)
             };
         }
-        return new JObject() { ["themes"] = themes, ["settings"] = AdminAPI.AutoConfigToParamData(session.User.Settings) };
+        return new JObject() { ["themes"] = themes, ["settings"] = AdminAPI.AutoConfigToParamData(session.User.Settings, true) };
     }
 
     public static async Task<JObject> ChangeUserSettings(Session session, JObject rawData)
@@ -497,11 +241,24 @@ public static class BasicAPIFeatures
                 Logs.Error($"User '{session.User.UserID}' tried to set unknown setting '{key}' to '{val}'.");
                 continue;
             }
+            if (field.Field.GetCustomAttribute<ValueIsRestrictedAttribute>() is not null)
+            {
+                Logs.Error($"User '{session.User.UserID}' tried to set restricted setting '{key}' to '{val}'.");
+                continue;
+            }
             object obj = AdminAPI.DataToType(val, field.Field.FieldType);
             if (obj is null)
             {
                 Logs.Error($"User '{session.User.UserID}' tried to set setting '{key}' of type '{field.Field.FieldType.Name}' to '{val}', but type-conversion failed.");
                 continue;
+            }
+            if (key.ToLowerFast() == "password")
+            {
+                if ($"{val}".Length < 8)
+                {
+                    return new JObject() { ["error"] = "Password must be at least 8 characters long." };
+                }
+                obj = Utilities.HashPassword(session.User.UserID, $"{val}");
             }
             session.User.Settings.TrySetFieldValue(key, obj);
         }

@@ -385,7 +385,15 @@ function toDataURL(url, callback) {
 
 /** Returns the given value rounded to the nearest multiple of the given step. */
 function roundTo(val, step) {
+    if (step == 0) {
+        return val;
+    }
     return Math.round(val / step) * step;
+}
+
+/** Returns the given value rounded to the nearest multiple of the given step, and fixed to have a reasonable number of digits after the decimal, then reparsed. */
+function roundToAuto(val, step) {
+    return parseFloat(roundToStrAuto(val, step));
 }
 
 /** Returns a string of the given value rounded to the nearest multiple of the given step, and fixed to have a reasonable number of digits after the decimal. */
@@ -894,4 +902,28 @@ function simpleAsteriskedMatcher(matcher, caseSensitive = false) {
         }
         return true;
     };
+}
+
+const mimeTypeForExtension = {
+    'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'webp': 'image/webp',
+    'gif': 'image/gif', 'ico': 'image/x-icon', 'svg': 'image/svg+xml', 'mp3': 'audio/mpeg',
+    'wav': 'audio/x-wav', 'js': 'application/javascript', 'ogg': 'application/ogg', 'json': 'application/json',
+    'zip': 'application/zip', 'dat': 'application/octet-stream', 'css': 'text/css', 'htm': 'text/html',
+    'html': 'text/html', 'txt': 'text/plain', 'yml': 'text/plain', 'fds': 'text/plain',
+    'xml': 'text/xml', 'mp4': 'video/mp4', 'mpeg': 'video/mpeg', 'mov': 'video/quicktime', 'webm': 'video/webm'
+};
+
+/** Guesses the mime type for a given filename based on its extension. */
+function guessMimeTypeForExtension(filename) {
+    if (filename.startsWith('data:')) {
+        return filename.split(';')[0].split(':')[1];
+    }
+    let ext = filename.split('.').pop();
+    return mimeTypeForExtension[ext] || '';
+}
+
+/** Returns true if the given filename is for a video file based on the extension, or false if it is not. */
+function isVideoExt(filename) {
+    let ext = filename.split('.').pop();
+    return ['mp4', 'mpeg', 'mov', 'webm'].includes(ext);
 }

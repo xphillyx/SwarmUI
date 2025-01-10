@@ -17,18 +17,20 @@ public static class ModelsAPI
 {
     public static void Register()
     {
-        API.RegisterAPICall(ListModels);
-        API.RegisterAPICall(DescribeModel);
-        API.RegisterAPICall(ListLoadedModels);
-        API.RegisterAPICall(SelectModel, true);
-        API.RegisterAPICall(SelectModelWS, true);
-        API.RegisterAPICall(DeleteWildcard, true);
-        API.RegisterAPICall(TestPromptFill);
-        API.RegisterAPICall(EditWildcard, true);
-        API.RegisterAPICall(EditModelMetadata, true);
-        API.RegisterAPICall(DoModelDownloadWS, true);
-        API.RegisterAPICall(GetModelHash, true);
-        API.RegisterAPICall(ForwardMetadataRequest);
+        API.RegisterAPICall(ListModels, false, Permissions.FundamentalModelAccess);
+        API.RegisterAPICall(DescribeModel, false, Permissions.FundamentalModelAccess);
+        API.RegisterAPICall(ListLoadedModels, false, Permissions.FundamentalModelAccess);
+        API.RegisterAPICall(SelectModel, true, Permissions.LoadModelsNow);
+        API.RegisterAPICall(SelectModelWS, true, Permissions.LoadModelsNow);
+        API.RegisterAPICall(DeleteWildcard, true, Permissions.EditWildcards);
+        API.RegisterAPICall(TestPromptFill, false, Permissions.FundamentalModelAccess);
+        API.RegisterAPICall(EditWildcard, true, Permissions.EditWildcards);
+        API.RegisterAPICall(EditModelMetadata, true, Permissions.EditModelMetadata);
+        API.RegisterAPICall(DoModelDownloadWS, true, Permissions.DownloadModels);
+        API.RegisterAPICall(GetModelHash, true, Permissions.EditModelMetadata);
+        API.RegisterAPICall(ForwardMetadataRequest, false, Permissions.EditModelMetadata);
+        API.RegisterAPICall(DeleteModel, false, Permissions.DeleteModels);
+        API.RegisterAPICall(RenameModel, false, Permissions.DeleteModels);
     }
 
     public static Dictionary<string, JObject> InternalExtraModels(string subtype)
@@ -85,9 +87,8 @@ public static class ModelsAPI
         {
             modelName = modelName.Replace("//", "/");
         }
-        string allowedStr = session.User.Restrictions.AllowedModels;
-        Regex allowed = allowedStr == ".*" ? null : new Regex(allowedStr, RegexOptions.Compiled | RegexOptions.IgnoreCase);
-        if (allowed is null || allowed.IsMatch(modelName))
+        modelName = modelName.TrimStart('/');
+        if (session.User.IsAllowedModel(modelName))
         {
             if (subtype == "Wildcards")
             {
@@ -164,14 +165,13 @@ public static class ModelsAPI
         {
             path = path.Replace("//", "/");
         }
-        string allowedStr = session.User.Restrictions.AllowedModels;
-        Regex allowed = allowedStr == ".*" ? null : new Regex(allowedStr, RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        path = path.TrimStart('/');
         HashSet<string> folders = [];
         List<ModelListEntry> files = [];
         HashSet<string> dedup = [];
         bool tryMatch(string name)
         {
-            if (!name.StartsWith(path) || name.Length <= path.Length || (allowed is not null && !allowed.IsMatch(name)))
+            if (!name.StartsWith(path) || name.Length <= path.Length || !session.User.IsAllowedModel(name))
             {
                 return false;
             }
@@ -259,9 +259,7 @@ public static class ModelsAPI
         )]
     public static async Task<JObject> ListLoadedModels(Session session)
     {
-        string allowedStr = session.User.Restrictions.AllowedModels;
-        Regex allowed = allowedStr == ".*" ? null : new Regex(allowedStr, RegexOptions.Compiled | RegexOptions.IgnoreCase);
-        List<T2IModel> matches = Program.MainSDModels.Models.Values.Where(m => m.AnyBackendsHaveLoaded && (allowed is null || allowed.IsMatch(m.Name))).ToList();
+        List<T2IModel> matches = Program.MainSDModels.Models.Values.Where(m => m.AnyBackendsHaveLoaded && session.User.IsAllowedModel(m.Name)).ToList();
         return new JObject()
         {
             ["models"] = JArray.FromObject(matches.Select(m => m.ToNetObject()).ToList())
@@ -286,15 +284,7 @@ public static class ModelsAPI
 
     public static bool TryGetRefusalForModel(Session session, string name, out JObject refusal)
     {
-        if (!session.User.Restrictions.CanChangeModels)
-        {
-            refusal = new JObject() { ["error"] = "You are not allowed to change models." };
-            return true;
-        }
-        // TODO: model-metadata-edit permission check
-        string allowedStr = session.User.Restrictions.AllowedModels;
-        Regex allowed = allowedStr == ".*" ? null : new Regex(allowedStr, RegexOptions.Compiled | RegexOptions.IgnoreCase);
-        if ((allowed != null && !allowed.IsMatch(name)) || string.IsNullOrWhiteSpace(name))
+        if (!session.User.IsAllowedModel(name))
         {
             Logs.Warning($"Rejected model access for model '{name}' from user {session.User.UserID}");
             refusal = new JObject() { ["error"] = "Model not found." };
@@ -560,7 +550,19 @@ public static class ModelsAPI
             File.Move(tempPath, outPath);
             if (!string.IsNullOrWhiteSpace(metadata))
             {
-                File.WriteAllText($"{handler.FolderPaths[0]}/{name}.json", metadata);
+                File.WriteAllText($"{handler.FolderPaths[0]}/{name}.swarm.json", metadata);
+            }
+            if (Program.ServerSettings.Paths.DownloaderAlwaysResave)
+            {
+                handler.Refresh();
+                if (handler.Models.TryGetValue($"{name}.safetensors", out T2IModel model))
+                {
+                    model.ResaveModel();
+                }
+                else
+                {
+                    Logs.Warning($"Could not resave model '{name}.safetensors' as it has not shown up in the backing handler. Something may have gone wrong.");
+                }
             }
             await ws.SendJson(new JObject() { ["success"] = true }, API.WebsocketTimeout);
         }
@@ -593,15 +595,8 @@ public static class ModelsAPI
         {
             return new JObject() { ["error"] = "Invalid sub-type." };
         }
-        modelName = modelName.Replace('\\', '/');
-        while (modelName.Contains("//"))
-        {
-            modelName = modelName.Replace("//", "/");
-        }
-        string allowedStr = session.User.Restrictions.AllowedModels;
-        Regex allowed = allowedStr == ".*" ? null : new Regex(allowedStr, RegexOptions.Compiled | RegexOptions.IgnoreCase);
         T2IModel match = null;
-        if (allowed is null || allowed.IsMatch(modelName))
+        if (session.User.IsAllowedModel(modelName))
         {
             if (handler.Models.TryGetValue(modelName + ".safetensors", out T2IModel model))
             {
@@ -647,5 +642,143 @@ public static class ModelsAPI
             Logs.Warning($"While parsing JSON response from '{url}', got exception: {ex.ReadableString()}");
             return new JObject() { ["error"] = $"{ex.GetType().Name}: {ex.Message}" };
         }
+    }
+
+    /// <summary>Internal call for model/image delete to clean up folders recursively.</summary>
+    static void AutoFolderRemove(T2IModelHandler handler, string path)
+    {
+        if (Directory.EnumerateFileSystemEntries(path).Any())
+        {
+            return;
+        }
+        string proper = Path.GetFullPath(path);
+        if (handler.FolderPaths.Any(preserve => Path.GetFullPath(preserve) == proper))
+        {
+            return;
+        }
+        string parent = Path.GetDirectoryName(path);
+        Directory.Delete(path);
+        AutoFolderRemove(handler, parent);
+    }
+
+    [API.APIDescription("Deletes a model from storage.", "\"success\": \"true\"")]
+    public static async Task<JObject> DeleteModel(Session session,
+        [API.APIParameter("Full filepath name of the model being deleted.")] string modelName,
+        [API.APIParameter("What model sub-type to use, can be eg `LoRA` or `Stable-Diffusion` or etc.")] string subtype = "Stable-Diffusion")
+    {
+        if (!Program.T2IModelSets.TryGetValue(subtype, out T2IModelHandler handler))
+        {
+            return new JObject() { ["error"] = "Invalid sub-type." };
+        }
+        T2IModel match = null;
+        if (session.User.IsAllowedModel(modelName))
+        {
+            if (handler.Models.TryGetValue(modelName + ".safetensors", out T2IModel model))
+            {
+                match = model;
+            }
+            else if (handler.Models.TryGetValue(modelName, out model))
+            {
+                match = model;
+            }
+        }
+        if (match is null)
+        {
+            return new JObject() { ["error"] = "Model not found." };
+        }
+        Action<string> deleteFile = Program.ServerSettings.Paths.RecycleDeletedImages ? Utilities.SendFileToRecycle : File.Delete;
+        void doDelete(string path)
+        {
+            deleteFile(path);
+            string fileBase = Path.GetFullPath(path).BeforeLast('.');
+            foreach (string str in T2IModelHandler.AllModelAttachedExtensions)
+            {
+                string altFile = $"{fileBase}{str}";
+                if (File.Exists(altFile))
+                {
+                    deleteFile(altFile);
+                }
+            }
+            AutoFolderRemove(handler, Path.GetDirectoryName(path));
+        }
+        doDelete(match.RawFilePath);
+        if (Program.ServerSettings.Paths.EditMetadataAcrossAllDups)
+        {
+            foreach (string altPath in match.OtherPaths)
+            {
+                doDelete(altPath);
+            }
+        }
+        handler.Models.Remove(match.Name, out _);
+        return new JObject() { ["success"] = true };
+    }
+
+    [API.APIDescription("Renames a model file, moving it within the model folder (allowing change of subfolders).", "\"success\": \"true\"")]
+    public static async Task<JObject> RenameModel(Session session,
+        [API.APIParameter("Full filepath name of the model being renamed.")] string oldName,
+        [API.APIParameter("New full filepath name for the model.")] string newName,
+        [API.APIParameter("What model sub-type to use, can be eg `LoRA` or `Stable-Diffusion` or etc.")] string subtype = "Stable-Diffusion")
+    {
+        if (!Program.T2IModelSets.TryGetValue(subtype, out T2IModelHandler handler))
+        {
+            return new JObject() { ["error"] = "Invalid sub-type." };
+        }
+        T2IModel match = null;
+        if (session.User.IsAllowedModel(oldName))
+        {
+            if (handler.Models.TryGetValue(oldName + ".safetensors", out T2IModel model))
+            {
+                oldName += ".safetensors";
+                match = model;
+            }
+            else if (handler.Models.TryGetValue(oldName, out model))
+            {
+                match = model;
+            }
+        }
+        if (match is null)
+        {
+            return new JObject() { ["error"] = "Model not found." };
+        }
+        (string oldNameNoExt, string ext) = match.Name.BeforeAndAfterLast('.');
+        newName = newName.BeforeLast('.');
+        newName = Utilities.StrictFilenameClean(newName).Trim().Trim('/').Replace(' ', '_');
+        if (string.IsNullOrWhiteSpace(newName) || !session.User.IsAllowedModel(oldName))
+        {
+            return new JObject() { ["error"] = "Model new name is not valid." };
+        }
+        if (handler.Models.TryGetValue(newName + ".safetensors", out _) || handler.Models.TryGetValue(newName, out _))
+        {
+            return new JObject() { ["error"] = "Model new name is already taken by an existing model." };
+        }
+        if (!match.RawFilePath.EndsWith(oldName))
+        {
+            Logs.Debug($"Model path {match.RawFilePath} does not end with {oldName}??");
+            return new JObject() { ["error"] = "Paths are being mishandled by the system. Cannot rename. (Please report this bug)" };
+        }
+        void doMoveNow(string oldPath)
+        {
+            string relevantRoot = oldPath[..^oldName.Length];
+            Directory.CreateDirectory($"{relevantRoot}/{Path.GetDirectoryName(newName)}");
+            File.Move(oldPath, $"{relevantRoot}/{newName}.{ext}");
+            foreach (string str in T2IModelHandler.AllModelAttachedExtensions)
+            {
+                string altFile = $"{relevantRoot}/{oldNameNoExt}{str}";
+                if (File.Exists(altFile))
+                {
+                    File.Move(altFile, $"{relevantRoot}/{newName}{str}");
+                }
+            }
+            AutoFolderRemove(handler, Path.GetDirectoryName(oldPath));
+        }
+        doMoveNow(match.RawFilePath);
+        if (Program.ServerSettings.Paths.EditMetadataAcrossAllDups)
+        {
+            foreach (string altPath in match.OtherPaths)
+            {
+                doMoveNow(altPath);
+            }
+        }
+        return new JObject() { ["success"] = true };
     }
 }

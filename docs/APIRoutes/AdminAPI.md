@@ -6,6 +6,13 @@ Administrative APIs related to server management.
 
 #### Table of Contents:
 
+- HTTP Route [AdminAddRole](#http-route-apiadminaddrole)
+- HTTP Route [AdminAddUser](#http-route-apiadminadduser)
+- HTTP Route [AdminDeleteRole](#http-route-apiadmindeleterole)
+- HTTP Route [AdminDeleteUser](#http-route-apiadmindeleteuser)
+- HTTP Route [AdminListPermissions](#http-route-apiadminlistpermissions)
+- HTTP Route [AdminListRoles](#http-route-apiadminlistroles)
+- HTTP Route [AdminListUsers](#http-route-apiadminlistusers)
 - HTTP Route [ChangeServerSettings](#http-route-apichangeserversettings)
 - HTTP Route [DebugGenDocs](#http-route-apidebuggendocs)
 - HTTP Route [DebugLanguageAdd](#http-route-apidebuglanguageadd)
@@ -17,14 +24,196 @@ Administrative APIs related to server management.
 - HTTP Route [ListServerSettings](#http-route-apilistserversettings)
 - HTTP Route [LogSubmitToPastebin](#http-route-apilogsubmittopastebin)
 - HTTP Route [ShutdownServer](#http-route-apishutdownserver)
+- HTTP Route [UninstallExtension](#http-route-apiuninstallextension)
 - HTTP Route [UpdateAndRestart](#http-route-apiupdateandrestart)
 - HTTP Route [UpdateExtension](#http-route-apiupdateextension)
+
+## HTTP Route /API/AdminAddRole
+
+#### Description
+
+Admin route to create a new user permission role.
+
+#### Permission Flag
+
+`configure_roles` - `Configure Roles` in group `Admin`
+
+#### Parameters
+
+| Name | Type | Description | Default |
+| --- | --- | --- | --- |
+| name | String | The name of the new role. | **(REQUIRED)** |
+
+#### Return Format
+
+```js
+    "success": true
+```
+
+## HTTP Route /API/AdminAddUser
+
+#### Description
+
+Admin route to create a new user account.
+
+#### Permission Flag
+
+`manage_users` - `Manage Users` in group `Admin`
+
+#### Parameters
+
+| Name | Type | Description | Default |
+| --- | --- | --- | --- |
+| name | String | The name of the new user. | **(REQUIRED)** |
+| password | String | Initial password for the new user. | **(REQUIRED)** |
+| role | String | Initial role for the new user. | **(REQUIRED)** |
+
+#### Return Format
+
+```js
+    "success": true
+```
+
+## HTTP Route /API/AdminDeleteRole
+
+#### Description
+
+Admin route to delete an existing user permission role.
+
+#### Permission Flag
+
+`configure_roles` - `Configure Roles` in group `Admin`
+
+#### Parameters
+
+| Name | Type | Description | Default |
+| --- | --- | --- | --- |
+| name | String | The name of the new role. | **(REQUIRED)** |
+
+#### Return Format
+
+```js
+    "success": true
+```
+
+## HTTP Route /API/AdminDeleteUser
+
+#### Description
+
+Admin route to delete an existing user account.
+
+#### Permission Flag
+
+`manage_users` - `Manage Users` in group `Admin`
+
+#### Parameters
+
+| Name | Type | Description | Default |
+| --- | --- | --- | --- |
+| name | String | The name of the user to delete. | **(REQUIRED)** |
+
+#### Return Format
+
+```js
+    "success": true
+```
+
+## HTTP Route /API/AdminListPermissions
+
+#### Description
+
+Admin route to get a list of all available permissions.
+
+#### Permission Flag
+
+`configure_roles` - `Configure Roles` in group `Admin`
+
+#### Parameters
+
+**None.**
+
+#### Return Format
+
+```js
+    "permissions": [
+        "perm_name": {
+            "name": "Perm Name",
+            "description": "Description text for the perm",
+            "default": "USER",
+            "group": {
+                "name": "My Group",
+                "description": "Some group description"
+            },
+            "safety_level": "UNTESTED",
+            "alt_safety_text": "some text here or null"
+        }
+    ]
+```
+
+## HTTP Route /API/AdminListRoles
+
+#### Description
+
+Admin route to get a list of all available roles.
+
+#### Permission Flag
+
+`configure_roles` - `Configure Roles` in group `Admin`
+
+#### Parameters
+
+**None.**
+
+#### Return Format
+
+```js
+    "roles": [
+        "user": {
+            "name": "User",
+            "description": "Text here...",
+            "max_out_depth_path": 5,
+            "is_auto_generated": true,
+            "model_whitelist": [],
+            "model_blacklist": [],
+            "permissions": ["first", "second"],
+            "max_t2i_simultaneous": 32,
+            "allow_unsafe_outpaths": false
+        }
+    ]
+```
+
+## HTTP Route /API/AdminListUsers
+
+#### Description
+
+Admin route to get a list of all known users by ID.
+
+#### Permission Flag
+
+`manage_users` - `Manage Users` in group `Admin`
+
+#### Parameters
+
+**None.**
+
+#### Return Format
+
+```js
+    "users": [
+        "user1",
+        "user2"
+    ]
+```
 
 ## HTTP Route /API/ChangeServerSettings
 
 #### Description
 
 Changes server settings.
+
+#### Permission Flag
+
+`edit_server_settings` - `Edit Server Settings` in group `Admin`
 
 #### Parameters
 
@@ -44,6 +233,10 @@ Changes server settings.
 
 (Internal/Debug route), generates API docs.
 
+#### Permission Flag
+
+`admin_debug` - `Admin Debug APIs` in group `Admin`
+
 #### Parameters
 
 **None.**
@@ -59,6 +252,10 @@ Changes server settings.
 #### Description
 
 (Internal/Debug route), adds language data to the language file builder.
+
+#### Permission Flag
+
+`admin_debug` - `Admin Debug APIs` in group `Admin`
 
 #### Parameters
 
@@ -77,6 +274,10 @@ Changes server settings.
 #### Description
 
 Returns information about the server's resource usage.
+
+#### Permission Flag
+
+`read_server_info_panels` - `Read Server Info Panels` in group `Admin`
 
 #### Parameters
 
@@ -114,6 +315,10 @@ Returns information about the server's resource usage.
 
 Installs an extension from the known extensions list. Does not trigger a restart. Does signal required rebuild.
 
+#### Permission Flag
+
+`manage_extensions` - `Manage Extensions` in group `Admin`
+
 #### Parameters
 
 | Name | Type | Description | Default |
@@ -131,6 +336,10 @@ Installs an extension from the known extensions list. Does not trigger a restart
 #### Description
 
 Returns a list of currently connected users.
+
+#### Permission Flag
+
+`read_server_info_panels` - `Read Server Info Panels` in group `Admin`
 
 #### Parameters
 
@@ -156,6 +365,10 @@ Returns a list of currently connected users.
 
 Returns a list of the available log types.
 
+#### Permission Flag
+
+`view_logs` - `View Server Logs` in group `Admin`
+
 #### Parameters
 
 **None.**
@@ -177,6 +390,10 @@ Returns a list of the available log types.
 #### Description
 
 Returns a list of recent server log messages.
+
+#### Permission Flag
+
+`view_logs` - `View Server Logs` in group `Admin`
 
 #### Parameters
 
@@ -205,6 +422,10 @@ Returns a list of recent server log messages.
 
 Returns a list of the server settings, will full metadata.
 
+#### Permission Flag
+
+`read_server_settings` - `Read Server Settings` in group `Admin`
+
 #### Parameters
 
 **None.**
@@ -230,6 +451,10 @@ Returns a list of the server settings, will full metadata.
 
 Submits current server log info to a pastebin service automatically.
 
+#### Permission Flag
+
+`view_logs` - `View Server Logs` in group `Admin`
+
 #### Parameters
 
 | Name | Type | Description | Default |
@@ -248,6 +473,10 @@ Submits current server log info to a pastebin service automatically.
 
 Shuts the server down. Returns success before the server is gone.
 
+#### Permission Flag
+
+`shutdown` - `Shutdown Server` in group `Admin`
+
 #### Parameters
 
 **None.**
@@ -258,11 +487,37 @@ Shuts the server down. Returns success before the server is gone.
 "success": true
 ```
 
+## HTTP Route /API/UninstallExtension
+
+#### Description
+
+Triggers an extension uninstallation for an installed extension. Does not trigger a restart. Does signal required rebuild.
+
+#### Permission Flag
+
+`manage_extensions` - `Manage Extensions` in group `Admin`
+
+#### Parameters
+
+| Name | Type | Description | Default |
+| --- | --- | --- | --- |
+| extensionName | String | The name of the extension to uninstall. | **(REQUIRED)** |
+
+#### Return Format
+
+```js
+    "success": true
+```
+
 ## HTTP Route /API/UpdateAndRestart
 
 #### Description
 
 Causes swarm to update, then close and restart itself. If there's no update to apply, won't restart.
+
+#### Permission Flag
+
+`restart` - `Restart Server` in group `Admin`
 
 #### Parameters
 
@@ -282,6 +537,10 @@ Causes swarm to update, then close and restart itself. If there's no update to a
 #### Description
 
 Triggers an extension update for an installed extension. Does not trigger a restart. Does signal required rebuild.
+
+#### Permission Flag
+
+`manage_extensions` - `Manage Extensions` in group `Admin`
 
 #### Parameters
 

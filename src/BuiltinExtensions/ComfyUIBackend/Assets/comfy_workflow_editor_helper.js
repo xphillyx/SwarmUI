@@ -599,8 +599,8 @@ function comfyBuildParams(callback) {
                     }
                     else if (['steps', 'start_at_step', 'end_at_step'].includes(inputId)) {
                         type = 'integer';
-                        min = 1;
-                        max = 50;
+                        min = 0;
+                        max = 10000;
                         step = 1;
                     }
                     else {

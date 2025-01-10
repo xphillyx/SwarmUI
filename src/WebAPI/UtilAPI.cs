@@ -1,5 +1,7 @@
 ﻿using FreneticUtilities.FreneticExtensions;
 using Newtonsoft.Json.Linq;
+using SwarmUI.Accounts;
+using SwarmUI.Backends;
 using SwarmUI.Core;
 using SwarmUI.Text2Image;
 using SwarmUI.Utils;
@@ -13,10 +15,10 @@ public static class UtilAPI
 {
     public static void Register()
     {
-        API.RegisterAPICall(CountTokens);
-        API.RegisterAPICall(TokenizeInDetail);
-        API.RegisterAPICall(Pickle2SafeTensor, true);
-        API.RegisterAPICall(WipeMetadata, true);
+        API.RegisterAPICall(CountTokens, false, Permissions.UseTokenizer);
+        API.RegisterAPICall(TokenizeInDetail, false, Permissions.UseTokenizer);
+        API.RegisterAPICall(Pickle2SafeTensor, true, Permissions.Pickle2Safetensors);
+        API.RegisterAPICall(WipeMetadata, true, Permissions.ResetMetadata);
     }
 
     public static ConcurrentDictionary<string, CliplikeTokenizer> Tokenizers = new();
@@ -126,17 +128,49 @@ public static class UtilAPI
         {
             return new JObject() { ["error"] = $"Invalid type '{type}'." };
         }
-        Process p = PythonLaunchHelper.LaunchGeneric("launchtools/pickle-to-safetensors.py", true, [models.FolderPaths[0], fp16 ? "true" : "false"]);
-        await p.WaitForExitAsync(Program.GlobalProgramCancel);
+        foreach (string path in models.FolderPaths)
+        {
+            Process p = PythonLaunchHelper.LaunchGeneric("launchtools/pickle-to-safetensors.py", true, [path, fp16 ? "true" : "false"]);
+            await p.WaitForExitAsync(Program.GlobalProgramCancel);
+        }
         return new JObject() { ["success"] = true };
     }
 
     [API.APIDescription("Trigger a mass metadata reset.", "\"success\": true")]
     public static async Task<JObject> WipeMetadata()
     {
-        foreach (T2IModelHandler handler in Program.T2IModelSets.Values)
+        BackendHandler.T2IBackendData[] backends = [.. Program.Backends.T2IBackends.Values];
+        foreach (BackendHandler.T2IBackendData backend in backends)
         {
-            handler.MassRemoveMetadata();
+            Interlocked.Add(ref backend.Usages, backend.Backend.MaxUsages);
+        }
+        try
+        {
+            int ticks = 0;
+            while (Program.Backends.T2IBackends.Values.Any(b => b.Usages > b.Backend.MaxUsages))
+            {
+                if (Program.GlobalProgramCancel.IsCancellationRequested)
+                {
+                    return null;
+                }
+                await Task.Delay(TimeSpan.FromSeconds(0.5));
+                if (ticks > 240)
+                {
+                    Logs.Info($"Reset All Metadata: stuck waiting for backends to be clear too long, will just do it anyway.");
+                    break;
+                }
+            }
+            foreach (T2IModelHandler handler in Program.T2IModelSets.Values)
+            {
+                handler.MassRemoveMetadata();
+            }
+        }
+        finally
+        {
+            foreach (BackendHandler.T2IBackendData backend in backends)
+            {
+                Interlocked.Add(ref backend.Usages, -backend.Backend.MaxUsages);
+            }
         }
         ImageMetadataTracker.MassRemoveMetadata();
         return new JObject() { ["success"] = true };

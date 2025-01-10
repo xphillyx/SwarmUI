@@ -6,6 +6,7 @@ class GenerateHandler {
         this.totalGenRunTime = 0;
         this.validateModel = true;
         this.interrupted = -1;
+        this.socket = null;
         this.imageContainerDivId = 'current_image';
         this.imageId = 'current_image_img';
         this.progressBarHtml = `<div class="image-preview-progress-inner"><div class="image-preview-progress-overall"></div><div class="image-preview-progress-current"></div></div>`;
@@ -72,6 +73,38 @@ class GenerateHandler {
     getBatchId() {
         return ++this.batchesEver;
     }
+
+    setImageFor(imgHolder, src) {
+        if (imgHolder.div.dataset.is_placeholder) {
+            delete imgHolder.div.dataset.is_placeholder;
+            imgHolder.div.classList.remove('image-block-placeholder');
+        }
+        let imgElem = imgHolder.div.querySelector('img');
+        let vid = imgHolder.div.querySelector('video');
+        if (vid) {
+            vid.remove();
+        }
+        if (isVideoExt(src)) {
+            if (imgElem) {
+                imgElem.remove();
+            }
+            vid = document.createElement('video');
+            vid.loop = true;
+            vid.autoplay = true;
+            vid.muted = true;
+            vid.width = 16 * 10;
+            let sourceObj = document.createElement('source');
+            sourceObj.src = src;
+            sourceObj.type = `video/${src.substring(src.lastIndexOf('.') + 1)}`;
+            vid.appendChild(sourceObj);
+            imgHolder.div.appendChild(vid);
+        }
+        else {
+            imgElem.src = src;
+        }
+        imgHolder.image = src;
+        imgHolder.div.dataset.src = src;
+    }
     
     doGenerate(input_overrides = {}, input_preoverrides = {}) {
         if (session_id == null) {
@@ -95,7 +128,20 @@ class GenerateHandler {
             let discardable = {};
             let timeLastGenHit = Date.now();
             let actualInput = this.getGenInput(input_overrides, input_preoverrides);
-            makeWSRequestT2I('GenerateText2ImageWS', actualInput, data => {
+            let socket = null;
+            let handleData = data => {
+                if ('socket_intention' in data && data.socket_intention == 'close') {
+                    if (this.socket == socket) {
+                        this.socket = null;
+                    }
+                    if (Object.keys(discardable).length > 0) {
+                        // clear any lingering previews
+                        for (let img of Object.values(images)) {
+                            img.div.remove();
+                        }
+                    }
+                    return;
+                }
                 if (isPreview) {
                     if (data.image) {
                         this.setCurrentImage(data.image, data.metadata, `${batch_id}_${data.batch_index}`, false, true);
@@ -123,10 +169,12 @@ class GenerateHandler {
                             }
                         }
                         let imgElem = imgHolder.div.querySelector('img');
-                        imgElem.src = data.image;
+                        this.setImageFor(imgHolder, data.image);
+                        let spinner = imgHolder.div.querySelector('.loading-spinner-parent');
+                        if (spinner) {
+                            spinner.remove();
+                        }
                         delete imgElem.dataset.previewGrow;
-                        imgHolder.image = data.image;
-                        imgHolder.div.dataset.src = data.image;
                         imgHolder.div.dataset.metadata = data.metadata;
                         let progress_bars = imgHolder.div.querySelector('.image-preview-progress-wrapper');
                         if (progress_bars) {
@@ -147,7 +195,7 @@ class GenerateHandler {
                     let thisBatchId = `${batch_id}_${data.gen_progress.batch_index}`;
                     if (!(data.gen_progress.batch_index in images)) {
                         let metadataRaw = data.gen_progress.metadata ?? '{}';
-                        let batch_div = this.gotImagePreview(data.gen_progress.preview ?? 'imgs/model_placeholder.jpg', metadataRaw, thisBatchId);
+                        let batch_div = this.gotImagePreview(data.gen_progress.preview ?? `DOPLACEHOLDER:${actualInput.model || ''}`, metadataRaw, thisBatchId);
                         if (batch_div) {
                             images[data.gen_progress.batch_index] = {div: batch_div, image: null, metadata: metadataRaw, overall_percent: 0, current_percent: 0};
                             let progress_bars = createDiv(null, 'image-preview-progress-wrapper', this.progressBarHtml);
@@ -170,9 +218,7 @@ class GenerateHandler {
                                 if (curImgElem && curImgElem.dataset.batch_id == thisBatchId) {
                                     curImgElem.src = data.gen_progress.preview;
                                 }
-                                imgHolder.div.dataset.src = data.gen_progress.preview;
-                                imgHolder.div.querySelector('img').src = data.gen_progress.preview;
-                                imgHolder.image = data.gen_progress.preview;
+                                this.setImageFor(imgHolder, data.gen_progress.preview);
                             }
                         }
                     }
@@ -197,20 +243,36 @@ class GenerateHandler {
                             this.setCurrentImage(imgs[0].image, imgs[0].metadata);
                         }
                     }
-                    if (Object.keys(discardable).length > 0) {
-                        // clear any lingering previews
-                        for (let img of Object.values(images)) {
-                            img.div.remove();
+                }
+            };
+            let handleError = e => {
+                console.log(`Error in GenerateText2ImageWS: ${e}, ${this.interrupted}, ${batch_id}`);
+                setTimeout(() => {
+                    for (let imgHolder of Object.values(images)) {
+                        let spinner = imgHolder.div.querySelector('.loading-spinner-parent');
+                        if (spinner) {
+                            spinner.remove();
+                            let failIcon = createDiv(null, 'image-block-failed');
+                            imgHolder.div.appendChild(failIcon);
+                        }
+                        let progress_bars = imgHolder.div.querySelector('.image-preview-progress-wrapper');
+                        if (progress_bars) {
+                            progress_bars.remove();
                         }
                     }
-                }
-            }, e => {
-                console.log(`Error in GenerateText2ImageWS: ${e}, ${this.interrupted}, ${batch_id}`);
+                }, 1);
                 if (this.interrupted >= batch_id) {
                     return;
                 }
                 this.hadError(e);
-            });
+            };
+            if (this.socket && this.socket.readyState == WebSocket.OPEN) {
+                this.socket.send(JSON.stringify(actualInput));
+            }
+            else {
+                socket = makeWSRequestT2I('GenerateText2ImageWS', actualInput, handleData, handleError);
+                this.socket = socket;
+            }
         };
         if (this.validateModel) {
             if (getRequiredElementById('current_model').value == '') {

@@ -22,7 +22,11 @@ function buildSettingsMenu(container, data, prefix, tracker) {
             let data = block[setting];
             let settingFull = `${blockPrefix}${setting}`;
             let visible = setting != 'language';
-            let fakeParam = { feature_flag: null, type: data.type, id: settingFull, name: data.name, description: data.description, default: data.value, min: null, max: null, step: null, toggleable: false, view_type: 'normal', values: data.values, visible: visible, value_names: data.value_names };
+            let viewType = 'normal';
+            if (data.is_secret) {
+                viewType = 'secret';
+            }
+            let fakeParam = { feature_flag: null, type: data.type, id: settingFull, name: data.name, description: data.description, default: data.value, min: null, max: null, step: null, toggleable: false, view_type: viewType, values: data.values, visible: visible, value_names: data.value_names };
             let result = getHtmlForParam(fakeParam, prefix);
             content += result.html;
             keys.push(settingFull);
@@ -34,7 +38,7 @@ function buildSettingsMenu(container, data, prefix, tracker) {
         for (let setting of groups) {
             let data = block[setting];
             let settingFull = `${blockPrefix}${setting}`;
-            content += `<div class="input-group input-group-open settings-group" id="auto-group-${prefix}${settingFull}"><span id="input_group_${prefix}${settingFull}" class="input-group-header input-group-shrinkable group-label"><span class="header-label-wrap"><span class="auto-symbol">&#x2B9F;</span><span class="header-label">${translateableHtml(data.name)}: ${translateableHtml(escapeHtmlNoBr(data.description))}</span></span></span><div class="input-group-content" id="input_group_content_${prefix}${settingFull}">`;
+            content += `<div class="input-group input-group-open settings-group" id="auto-group-${prefix}${settingFull}"><span id="input_group_${prefix}${settingFull}" class="input-group-header input-group-shrinkable group-label"><span class="header-label-wrap"><span class="auto-symbol">&#x2B9F;</span><span class="header-label">${translateableHtml(data.name)}: ${translateableHtml(safeHtmlOnly(data.description))}</span></span></span><div class="input-group-content" id="input_group_content_${prefix}${settingFull}">`;
             for (let i = 0; i < data.description.split('\n').length - 1; i++) {
                 content += '<br>';
             }
@@ -122,7 +126,7 @@ function applyThemeSetting(theme_info) {
 function loadUserSettings(callback = null) {
     genericRequest('GetUserSettings', {}, data => {
         if (coreModelMap['VAE'] != null) {
-            for (let setting of ['defaultsdxlvae', 'defaultsdv1vae', 'defaultsvdvae', 'defaultfluxvae']) {
+            for (let setting of ['defaultsdxlvae', 'defaultsdv1vae', 'defaultsvdvae', 'defaultfluxvae', 'defaultsd3vae', 'defaultmochivae']) {
                 data.settings.vaes.value[setting].values = ['None'].concat(coreModelMap['VAE']);
             }
         }

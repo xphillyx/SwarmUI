@@ -26,6 +26,25 @@ For example, if you wanted to send a message on Discord after every generation, 
 }
 ```
 
+Note that the values will be JSON-Escaped for strings, ie you cannot write raw JSON data in the prompt and pass that through a webhook.
+
+### Direct Image On Discord
+
+If you want to upload an image directly to Discord, for webhooks that support it (eg `Every Gen`), you can prefix the data value with `[discord_image]`, before the JSON part itself.
+
+Note that this is a very special case that only makes sense for Discord.
+
+For example, if you wanted to send a message on Discord after every generation with the image directly included, you would set the Every Gen Webhook URL to `https://discord.com/api/webhooks/(whatever your generated url is here)`, and set the JSON data to something like:
+```json
+[discord_image]
+{
+  "username": "SwarmUI",
+  "content": "Generated your image! Prompt was `%prompt%`, image attached:"
+}
+```
+
+For special info related to images on Discord, see [Discord's docs here](https://discord.com/developers/docs/reference#uploading-files).
+
 ## Available Hooks
 
 ### Queue Start Webhook
@@ -51,3 +70,11 @@ Users may suppress this webhook by setting the `Swarm Internal` advanced paramet
 This webhook is fired when manually requested by a user, via the `Swarm Internal` advanced parameter `Webhooks`. Users may set this to `Manual` to fire this webook for every gen, or to `Manual At End` to fire this webhook at the end of a batch of generations.
 
 Note that `Manual At End` does not include any `%image%` value, but does still include the core parameter set the batch was generated with. Values that are dynamically added to metadata later in generation will also be missing from the available JSON settings for this webhook.
+
+### Server Start Webhook
+
+This webhook is fired when the server has started. The Swarm server is generally usable after this webhook has fired. Do note that this doesn't indicate backends have loaded. (You may request generations before backends have loaded, but those generations will of course wait for the backends to load first).
+
+### Server Shutdown Webhook
+
+This webhook is fired when the server is shutting down. The shutdown does not commence until the webhook is completed. To avoid stuck processes, there's a 2 minute timeout before the webhook delay will be ignored.

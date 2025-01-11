@@ -273,7 +273,14 @@ public class T2IParamTypes
     {
         if (update.Contains("{value}"))
         {
-            return update.Replace("{value}", prior ?? "");
+            prior ??= "";
+            string low = prior.ToLowerFast();
+            int end = new int[] { low.IndexOf("<segment:"), low.IndexOf("<object:"), low.IndexOf("<region:") }.Where(i => i != -1).Order().FirstOrDefault(-1);
+            if (end != -1)
+            {
+                return update.Replace("{value}", prior[..end].Trim()) + " " + prior[end..].Trim();
+            }
+            return update.Replace("{value}", prior);
         }
         return update;
     }
@@ -361,7 +368,7 @@ public class T2IParamTypes
             "25", Min: 1, Max: 1000, OrderPriority: 1, Group: GroupText2Video, FeatureFlag: "text2video"
             ));
         Text2VideoFPS = Register<int>(new("Text2Video FPS", "The FPS (frames per second) to use for video generation.\nThis configures the target FPS the video is expecting to work at.\nFor Mochi or Hunyuan Video, this is 24.\nFor LTXV, 24 fps is native, but other values may work.",
-            "24", Min: 1, Max: 1024, ViewType: ParamViewType.BIG, OrderPriority: 2, Group: GroupText2Video, FeatureFlag: "text2video", IsAdvanced: true
+            "24", Min: 1, Max: 1024, ViewType: ParamViewType.BIG, OrderPriority: 2, Group: GroupText2Video, FeatureFlag: "text2video", IsAdvanced: true, Toggleable: true
             ));
         Text2VideoBoomerang = Register<bool>(new("Text2Video Boomerang", "Whether to boomerang (aka pingpong) the video.\nIf true, the video will play and then play again in reverse to enable smooth looping.",
             "false", IgnoreIf: "false", OrderPriority: 20, Group: GroupText2Video, IsAdvanced: true, FeatureFlag: "text2video"
@@ -434,7 +441,7 @@ public class T2IParamTypes
             "false", IgnoreIf: "false", Group: GroupInitImage, OrderPriority: -3.2, IsAdvanced: true
             ));
         UnsamplerPrompt = Register<string>(new("Unsampler Prompt", "If enabled, feeds this prompt to an unsampler before resampling with your main prompt.\nThis is powerful for controlled image editing.\n\nFor example, use unsampler prompt 'a photo of a man wearing a black hat',\nand give main prompt 'a photo of a man wearing a sombrero', to change what type of hat a person is wearing.",
-            "", OrderPriority: -3, Toggleable: true, ViewType: ParamViewType.PROMPT, Group: GroupInitImage
+            "", OrderPriority: -3, Toggleable: true, Clean: ApplyStringEdit, ViewType: ParamViewType.PROMPT, Group: GroupInitImage
             ));
         GroupRefiners = new("Refine / Upscale", Toggles: true, Open: false, OrderPriority: -3, Description: "This group contains everything related to two-stage image generation.\nNotably this includes post-refinement, step-swap refinement, and upscaled refinement.\nUpscaling an image and refining with the same model has been referred to as 'hires fix' in other UIs.");
         static List<string> listRefinerModels(Session s)
@@ -510,8 +517,8 @@ public class T2IParamTypes
         VideoFrames = Register<int>(new("Video Frames", "How many frames to generate within the video.\nSVD-XT prefers 25.\nLTXV supports frame counts anywhere up to 257. Multiples of 8 plus 1 (9, 17, 25, 33, 41, ...) are required and will automatically round if you enter an invalid value. Defaults to 97.",
             "25", Min: 1, Max: 1000, OrderPriority: 2, Group: GroupVideo, Permission: Permissions.ParamVideo, FeatureFlag: "video", DoNotPreview: true
             ));
-        VideoFPS = Register<int>(new("Video FPS", "The FPS (frames per second) to use for video generation.\nThis configures the target FPS the video will try to generate for.\nLTXV prefers 24.",
-            "6", Min: 1, Max: 1024, ViewMax: 30, ViewType: ParamViewType.SLIDER, OrderPriority: 2.5, Group: GroupVideo, Permission: Permissions.ParamVideo, FeatureFlag: "video", DoNotPreview: true
+        VideoFPS = Register<int>(new("Video FPS", "The FPS (frames per second) to use for video generation.\nThis configures the target FPS the video will try to generate for.\nSVD prefers 6, LTXV prefers 24.",
+            "6", Min: 1, Max: 1024, ViewMax: 30, ViewType: ParamViewType.SLIDER, OrderPriority: 2.5, Group: GroupVideo, Permission: Permissions.ParamVideo, FeatureFlag: "video", DoNotPreview: true, IsAdvanced: true, Toggleable: true
             ));
         VideoSteps = Register<int>(new("Video Steps", "How many steps to use for the video model.\nHigher step counts yield better quality, but much longer generation time.\n40 will get good quality, but 20 is sufficient as a basis.",
             "40", Min: 1, Max: 200, ViewMax: 100, ViewType: ParamViewType.SLIDER, OrderPriority: 3, Group: GroupVideo, Permission: Permissions.ParamVideo, FeatureFlag: "video", DoNotPreview: true
@@ -610,7 +617,7 @@ public class T2IParamTypes
             }
             ));
         PersonalNote = Register<string>(new("Personal Note", "Optional field to type in any personal text note you want.\nThis will be stored in the image metadata.",
-            "", IgnoreIf: "", IsAdvanced: true, Group: GroupSwarmInternal, ViewType: ParamViewType.BIG, AlwaysRetain: true, OrderPriority: 0
+            "", IgnoreIf: "", IsAdvanced: true, Clean: ApplyStringEdit, Group: GroupSwarmInternal, ViewType: ParamViewType.BIG, AlwaysRetain: true, OrderPriority: 0
             ));
         ImageFormat = Register<string>(new("Image Format", "Optional override for the final image file format.",
             "PNG", GetValues: (_) => [.. Enum.GetNames(typeof(Image.ImageFormat))], IsAdvanced: true, Group: GroupSwarmInternal, AlwaysRetain: true, Toggleable: true, OrderPriority: 1

@@ -195,10 +195,17 @@ public class WorkflowGenerator
         return clazz is not null && clazz == "hunyuan-video";
     }
 
+    /// <summary>Returns true if the current model is Hunyuan Video.</summary>
+    public bool IsNvidiaCosmos()
+    {
+        string clazz = CurrentCompatClass();
+        return clazz is not null && clazz == "nvidia-cosmos-1";
+    }
+
     /// <summary>Returns true if the current main text input model model is a Video model (as opposed to image).</summary>
     public bool IsVideoModel()
     {
-        return IsLTXV() || IsMochi() || IsHunyuanVideo();
+        return IsLTXV() || IsMochi() || IsHunyuanVideo() || IsNvidiaCosmos();
     }
 
     /// <summary>Gets a dynamic ID within a semi-stable registration set.</summary>
@@ -206,11 +213,11 @@ public class WorkflowGenerator
     {
         int id = 1000 + index + offset;
         string result = $"{id}";
-        if (HasNode(result))
+        if (!HasNode(result))
         {
-            return GetStableDynamicID(index, offset + 1);
+            return result;
         }
-        return result;
+        return GetStableDynamicID(index, offset + 1);
     }
 
     /// <summary>Creates a new node with the given class type and configuration action, and optional manual ID.</summary>
@@ -555,6 +562,15 @@ public class WorkflowGenerator
             requireClipModel("t5xxl_enconly.safetensors", "https://huggingface.co/mcmonkey/google_t5-v1_1-xxl_encoderonly/resolve/main/t5xxl_fp8_e4m3fn.safetensors", "7d330da4816157540d6bb7838bf63a0f02f573fc48ca4d8de34bb0cbfd514f09");
             return "t5xxl_enconly.safetensors";
         }
+        string getOldT5XXLModel()
+        {
+            if (UserInput.TryGet(T2IParamTypes.T5XXLModel, out T2IModel model))
+            {
+                return model.Name;
+            }
+            requireClipModel("old_t5xxl_cosmos.safetensors", "https://huggingface.co/comfyanonymous/cosmos_1.0_text_encoder_and_VAE_ComfyUI/resolve/main/text_encoders/oldt5_xxl_fp8_e4m3fn_scaled.safetensors", "1d0dd711ec9866173d4b39e86db3f45e1614a4e3f84919556f854f773352ea81");
+            return "old_t5xxl_cosmos.safetensors";
+        }
         string getClipLModel()
         {
             if (UserInput.TryGet(T2IParamTypes.ClipLModel, out T2IModel model))
@@ -885,6 +901,16 @@ public class WorkflowGenerator
             LoadingClip = [dualClipLoader, 0];
             doVaeLoader(null, "hunyuan-video", "hunyuan-video-vae");
         }
+        else if (IsNvidiaCosmos())
+        {
+            string clipLoader = CreateNode("CLIPLoader", new JObject()
+            {
+                ["clip_name"] = getOldT5XXLModel(),
+                ["type"] = "cosmos"
+            });
+            LoadingClip = [clipLoader, 0];
+            doVaeLoader(null, "nvidia-cosmos-1", "cosmos-vae");
+        }
         else if (CurrentCompatClass() == "auraflow-v1")
         {
             string auraNode = CreateNode("ModelSamplingAuraFlow", new JObject()
@@ -1019,6 +1045,45 @@ public class WorkflowGenerator
     /// <summary>Creates a KSampler and returns its node ID.</summary>
     public string CreateKSampler(JArray model, JArray pos, JArray neg, JArray latent, double cfg, int steps, int startStep, int endStep, long seed, bool returnWithLeftoverNoise, bool addNoise, double sigmin = -1, double sigmax = -1, string previews = null, string defsampler = null, string defscheduler = null, string id = null, bool rawSampler = false, bool doTiled = false, bool isFirstSampler = false, bool hadSpecialCond = false)
     {
+        if (UserInput.TryGet(ComfyUIBackendExtension.TeaCacheMode, out string teaCacheMode) && teaCacheMode != "disabled")
+        {
+            double teaCacheThreshold = UserInput.Get(ComfyUIBackendExtension.TeaCacheThreshold, 0.25);
+            if (teaCacheMode == "base gen only" && !isFirstSampler)
+            {
+                // wrong step, skip
+            }
+            else if (IsFlux())
+            {
+                if (teaCacheMode != "video only")
+                {
+                    string teaCacheNode = CreateNode("TeaCacheForImgGen", new JObject()
+                    {
+                        ["model"] = model,
+                        ["enable_teacache"] = true,
+                        ["model_type"] = "flux",
+                        ["rel_l1_thresh"] = teaCacheThreshold,
+                        ["steps"] = steps
+                    });
+                    model = [teaCacheNode, 0];
+                }
+            }
+            else if (IsHunyuanVideo() || IsLTXV())
+            {
+                string teaCacheNode = CreateNode("TeaCacheForVidGen", new JObject()
+                {
+                    ["model"] = model,
+                    ["enable_teacache"] = true,
+                    ["model_type"] = IsHunyuanVideo() ? "hunyuan_video" : "ltxv",
+                    ["rel_l1_thresh"] = teaCacheThreshold,
+                    ["steps"] = steps
+                });
+                model = [teaCacheNode, 0];
+            }
+            else
+            {
+                Logs.Debug($"Ignore TeaCache Mode parameter because the current model is '{CurrentModelClass()?.Name ?? "(none)"}' which does not support TeaCache.");
+            }
+        }
         if (IsVideoModel())
         {
             previews ??= UserInput.Get(ComfyUIBackendExtension.Text2VideoPreviewType, "animate");
@@ -1031,12 +1096,16 @@ public class WorkflowGenerator
                 {
                     ["positive"] = pos,
                     ["negative"] = neg,
-                    ["frame_rate"] = UserInput.Get(T2IParamTypes.Text2VideoFPS, 25)
+                    ["frame_rate"] = UserInput.Get(T2IParamTypes.Text2VideoFPS, 24)
                 });
                 pos = [ltxvcond, 0];
                 neg = [ltxvcond, 1];
             }
             defscheduler ??= "ltxv";
+        }
+        if (IsNvidiaCosmos())
+        {
+            defscheduler ??= "karras";
         }
         bool willCascadeFix = false;
         JArray cascadeModel = null;
@@ -1354,6 +1423,17 @@ public class WorkflowGenerator
             {
                 ["batch_size"] = batchSize,
                 ["length"] = UserInput.Get(T2IParamTypes.Text2VideoFrames, 73),
+                ["height"] = height,
+                ["width"] = width
+            }, id);
+        }
+        else if (IsNvidiaCosmos())
+        {
+
+            return CreateNode("EmptyCosmosLatentVideo", new JObject()
+            {
+                ["batch_size"] = batchSize,
+                ["length"] = UserInput.Get(T2IParamTypes.Text2VideoFrames, 121),
                 ["height"] = height,
                 ["width"] = width
             }, id);
